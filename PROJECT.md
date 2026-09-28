@@ -287,7 +287,7 @@ Major routes identified.
 E-commerce explicitly excluded.
 
 Milestone 1 — Project Foundation
-Status: ⬜ NOT STARTED
+Status: ✅ COMPLETE
 Goals:
 Create a clean Next.js/TypeScript project foundation.
 Tasks:
@@ -634,7 +634,7 @@ The public website is reachable through its production domain and the administra
 12. Specification
     ✅ Complete
 13. Project Foundation
-    ⬜ Not Started
+    ✅ Complete
 14. Supabase Foundation
     ⬜ Not Started
 15. Database Schema
@@ -688,6 +688,27 @@ The public website is reachable through its production domain and the administra
     Issue or None
     Next milestone
     Milestone X
+
+    2026-09-28 — Milestone 1
+    Completed
+    Next.js 16 App Router project with TypeScript (strict) and src/ structure
+    ESLint (eslint-config-next core-web-vitals + TypeScript), typecheck script
+    .env.example convention, .gitignore, README
+    Files created
+    package.json, package-lock.json, tsconfig.json, next.config.ts, eslint.config.mjs
+    .gitignore, .env.example, README.md, AGENTS.md, CLAUDE.md
+    src/app/layout.tsx, src/app/page.tsx, src/app/globals.css, src/app/favicon.ico
+    Files modified
+    PROJECT.md
+    Database changes
+    None
+    Tests performed
+    npm run lint, npm run typecheck (incl. from clean state), npm run build
+    npm run dev and npm run start serve / with HTTP 200
+    Known issues
+    None blocking
+    Next milestone
+    Milestone 2 — Supabase Foundation
 
 31. AI Development Workflow
     Claude will perform most implementation work.
@@ -751,8 +772,8 @@ The report should be saved/copied into the development workflow so another devel
 
 16. Current State
     Current milestone:
-    Milestone 1 — Project Foundation
+    Milestone 2 — Supabase Foundation
     Project status:
-    Planning complete. Implementation not yet started.
+    Project foundation complete (Milestone 1). Supabase not yet integrated.
     Next action:
-    Create the initial Next.js/TypeScript project foundation.
+    Connect the application to Supabase (browser/server clients, env vars).
