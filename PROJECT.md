@@ -312,7 +312,7 @@ must work successfully.
 TypeScript must compile without errors.
 
 Milestone 2 — Supabase Foundation
-Status: ⬜ NOT STARTED
+Status: ✅ COMPLETE
 Goals:
 Connect the application to Supabase correctly.
 Tasks:
@@ -636,7 +636,7 @@ The public website is reachable through its production domain and the administra
 13. Project Foundation
     ✅ Complete
 14. Supabase Foundation
-    ⬜ Not Started
+    ✅ Complete
 15. Database Schema
     ⬜ Not Started
 16. Database Security / RLS
@@ -710,6 +710,33 @@ The public website is reachable through its production domain and the administra
     Next milestone
     Milestone 2 — Supabase Foundation
 
+    2026-09-28 — Milestone 2
+    Completed
+    Installed @supabase/ssr and @supabase/supabase-js (auth-helpers packages are deprecated)
+    Browser client (src/lib/supabase/client.ts) and server-only server client (src/lib/supabase/server.ts)
+    Session refresh via Next.js 16 proxy (src/proxy.ts, formerly middleware); no route protection
+    Env validation; refuses secret/service_role keys in NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+    Read-only connectivity check: npm run check:supabase (Auth health endpoint)
+    Files created
+    src/lib/supabase/env.ts, src/lib/supabase/client.ts, src/lib/supabase/server.ts
+    src/lib/supabase/proxy.ts, src/proxy.ts, scripts/check-supabase.mjs
+    Files modified
+    package.json, package-lock.json, .env.example, README.md, PROJECT.md
+    Database changes
+    None
+    Tests performed
+    npm run lint, npm run typecheck, npm run build: pass
+    Dev server: missing env -> clear error (500); placeholder env -> / 200 (also with stale auth cookie)
+    Secret key (sb_secret_) and legacy service_role JWT in public var -> refused
+    Importing server client into a Client Component -> build fails (server-only guard)
+    check:supabase error paths (missing .env.local, unreachable host) -> exit non-zero
+    Live connectivity: npm run check:supabase against the configured project -> success
+    (Auth service GoTrue v2.197.0 responded; credentials in git-ignored .env.local)
+    Known issues
+    None blocking
+    Next milestone
+    Milestone 3 — Database Schema
+
 31. AI Development Workflow
     Claude will perform most implementation work.
     Claude should NOT be given unrestricted instructions such as:
@@ -772,8 +799,9 @@ The report should be saved/copied into the development workflow so another devel
 
 16. Current State
     Current milestone:
-    Milestone 2 — Supabase Foundation
+    Milestone 3 — Database Schema
     Project status:
-    Project foundation complete (Milestone 1). Supabase not yet integrated.
+    Milestones 1–2 complete. Application connects to Supabase (browser/server clients,
+    proxy session refresh, env configuration verified). No application schema yet.
     Next action:
-    Connect the application to Supabase (browser/server clients, env vars).
+    Create the products and events tables via migrations (Milestone 3).
