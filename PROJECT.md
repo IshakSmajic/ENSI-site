@@ -267,8 +267,9 @@ read only their own row. Role changes happen through privileged server-side acce
    There is initially exactly one Owner unless requirements change (enforced by the
    user_roles_single_owner index).
    The initial Owner account is bootstrapped manually during application
-   setup/deployment: invite the Owner through Supabase Auth, then run
-   scripts/bootstrap-owner.sql in the SQL Editor (README, "Bootstrapping the Owner").
+   setup/deployment: create the Owner's Supabase Auth user (Dashboard "Create new user";
+   the Owner sets their own password), then run scripts/bootstrap-owner.sql
+   (README, "Bootstrapping the Owner"). Done for the current hosted project.
 
    Role hierarchy:
    auth.users (Supabase Auth: identity)
@@ -493,7 +494,7 @@ Events can be created and queried.
 Database can be recreated from migrations.
 
 Milestone 4 — Database Security / RLS
-Status: ✅ COMPLETE
+Status: ✅ COMPLETE (implemented; deployed to and verified on the hosted project 2026-09-28)
 Goals:
 Secure the database before building administrative CRUD features, using the
 Owner/Employee authorization model (sections 5 and 7).
@@ -558,7 +559,7 @@ Protect administrative child routes.
 Check the user's application role server-side, not only that a session exists.
 Deny signed-in users without an Employee/Owner role.
 Make the user's role available to server code so Owner-only areas can be gated.
-Confirm public sign-up is disabled on the hosted project (supabase/config.toml already disables it locally since Milestone 4).
+Public sign-up is already disabled (supabase/config.toml locally; hosted Dashboard setting verified 2026-09-28).
 Handle expired sessions.
 Handle invalid credentials.
 Redirect unauthenticated visitors.
@@ -846,7 +847,7 @@ The public website is reachable through its production domain and the administra
     Milestone 1 — Project Foundation: ✅ Complete
     Milestone 2 — Supabase Foundation: ✅ Complete
     Milestone 3 — Database Schema: ✅ Complete
-    Milestone 4 — Database Security / RLS: ✅ Complete
+    Milestone 4 — Database Security / RLS: ✅ Complete (deployed and verified on hosted Supabase)
     Milestone 5 — Admin Authentication: ⬜ Not Started
     Milestone 6 — Owner Employee Management: ⬜ Not Started
     Milestone 7 — Admin Product Management: ⬜ Not Started
@@ -1044,6 +1045,49 @@ The public website is reachable through its production domain and the administra
     Next milestone
     Milestone 5 — Admin Authentication
 
+    2026-09-28 — Milestone 4 hosted deployment & verification
+    Completed
+    CLI linked to hosted project ENSI (Postgres 17.6). Remote state before deployment: empty
+    public schema, no private schema, no migration history, 0 Auth users; default privileges
+    were Supabase's permissive defaults (ALL incl. TRUNCATE for anon/authenticated)
+    Hosted public sign-up disabled in the Dashboard (verified: settings disable_signup true,
+    /auth/v1/signup returns signup_disabled)
+    npx supabase db push (dry run first) applied 20260928084238 and 20260928090452 in one
+    session; tables empty immediately after; both recorded in remote migration history
+    Live catalog verified: RLS on products/events/user_roles; anon SELECT only on
+    products/events; authenticated SELECT/INSERT/UPDATE/DELETE on products/events and
+    SELECT on user_roles; no TRUNCATE for API roles; 10 policies as designed; user_roles
+    PK/FK (auth.users, cascade)/role CHECK/single-owner index; private.is_staff()
+    SECURITY INVOKER, search_path '', EXECUTE only for authenticated; private schema not
+    exposed (PGRST106), is_staff/set_updated_at not callable as RPC (PGRST202)
+    Owner Auth user created by the Owner in the Dashboard; scripts/bootstrap-owner.sql run
+    through the linked CLI with the email substituted in memory; exactly one owner row,
+    referencing the intended Auth user; re-run refused (duplicate key)
+    Files created
+    None
+    Files modified
+    README.md, PROJECT.md (hosted state; Owner creation uses "Create new user" until an
+    invitation-acceptance page exists; CLI --file note for the bootstrap script)
+    Database changes
+    Hosted: both migrations applied; one owner row in user_roles. No other data.
+    Tests performed
+    Anonymous via the real Data API (publishable key): all product/event/user_roles writes
+    and user_roles reads denied (401/42501); RPC/private-schema exposure checks
+    Owner smoke test run by the Owner (normal password sign-in, publishable key, no
+    service-role key): 25/25 passed — Owner product/event CRUD, Owner sees
+    current/future/expired/inactive events, Owner reads only own user_roles row and cannot
+    insert/upsert/update/delete role rows; anonymous sees available and unavailable
+    products and only the current event, all anonymous writes denied; test rows cleaned up
+    Final state: 0 products, 0 events, 1 Auth user, 1 owner row, 0 employees
+    Security Advisor: only auth_leaked_password_protection (Auth setting, not database);
+    performance advisor: multiple permissive SELECT policies on events (intentional)
+    Known issues
+    Authenticated-without-role path not smoke-tested on hosted (no temporary production
+    user created); covered by local PostgREST tests and the identical hosted catalog
+    Employee path not smoke-tested on hosted (no employees exist; not created by design)
+    Next milestone
+    Milestone 5 — Admin Authentication
+
 13. AI Development Workflow
     Claude will perform most implementation work.
     Claude should NOT be given unrestricted instructions such as:
@@ -1111,9 +1155,8 @@ The report should be saved/copied into the development workflow so another devel
     Milestones 1–4 complete. Application connects to Supabase (browser/server clients,
     proxy session refresh, env configuration verified). products, events and user_roles
     exist as migrations with RLS, role-checked policies and explicit grants
-    (sections 4, 5, 7). The migrations have NOT been applied to the hosted project yet;
-    apply both together (README, "Deploying the database"), disable public sign-up on the
-    hosted project, then bootstrap the Owner.
+    (sections 4, 5, 7). Both migrations are applied to and verified on the hosted project;
+    hosted public sign-up is disabled; the Owner is bootstrapped (one owner, no employees).
     Next action:
     Milestone 5: admin login/logout and /admin protection, resolving the user's role
     server-side from user_roles (the user can read their own row).

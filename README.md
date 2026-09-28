@@ -12,8 +12,10 @@ Milestones 1–4 (Project Foundation, Supabase Foundation, Database Schema, Data
 Security / RLS) are complete. The application is a minimal placeholder page wired to
 Supabase: browser and server clients and session-refreshing proxy exist, and the
 `products`, `events` and `user_roles` tables with Row Level Security are defined as
-migrations (not yet applied to the hosted project; see
-[Deploying the database](#deploying-the-database)). Authentication UI, features, and
+migrations. Both migrations are applied to the hosted Supabase project and verified
+there (2026-09-28): RLS, grants and policies checked in the live catalog, public sign-up
+disabled, the Owner bootstrapped, and a smoke test run with a real Owner session.
+Authentication UI, features, and
 design have not been implemented yet.
 
 ## Access model
@@ -152,14 +154,16 @@ authenticated user may read their own `user_roles` row.
 
 Public sign-up is disabled in [supabase/config.toml](supabase/config.toml) (`[auth]` and
 `[auth.email]` `enable_signup = false`). That file only configures the **local** stack.
-On the hosted project, disable it in the Dashboard: Authentication → Sign In / Providers →
-turn off "Allow new users to sign up". Invitations (Dashboard or the server-side Admin API)
+On a hosted project it is a separate Dashboard setting: Authentication → Sign In /
+Providers → turn off "Allow new users to sign up" (done and verified on the current
+hosted project: `/auth/v1/signup` returns `signup_disabled`). Invitations (Dashboard or the server-side Admin API)
 still work with sign-up disabled.
 
 ### Deploying the database
 
-The hosted project has none of the migrations yet. Apply them together, never just the
-first one (the Milestone 3 tables have no RLS on their own):
+Done for the current hosted project; repeat for any new environment. Apply the
+migrations together, never just the first one (the Milestone 3 tables have no RLS on
+their own):
 
 1. Disable public sign-up on the hosted project (above).
 2. `npx supabase link --project-ref <project-ref>`, then `npx supabase db push`. Check the
@@ -176,11 +180,18 @@ first one (the Milestone 3 tables have no RLS on their own):
 There is exactly one Owner. No identity is stored in migrations; the Owner is assigned
 once per environment by a deliberate manual step:
 
-1. Dashboard → Authentication → Users → **Invite user** with the Owner's email. The
-   Owner accepts the invitation and sets their own password.
-2. Dashboard → SQL Editor: paste [scripts/bootstrap-owner.sql](scripts/bootstrap-owner.sql),
-   replace `REPLACE_WITH_OWNER_EMAIL` with the Owner's email **in the editor only** (never
-   commit it), and run it.
+1. Dashboard → Authentication → Users → Add user → **Create new user** with the Owner's
+   email; the Owner types their own password and "Auto Confirm User" is ticked. (Do not
+   use "Invite user" yet: the application has no page to accept an invitation and set a
+   password until Milestones 5/6.)
+2. Run [scripts/bootstrap-owner.sql](scripts/bootstrap-owner.sql) with
+   `REPLACE_WITH_OWNER_EMAIL` replaced by the Owner's email **outside the repository**
+   (never commit it), either:
+   - Dashboard → SQL Editor: paste the script and replace the placeholder in the editor, or
+   - linked CLI, substituting in memory only:
+     `npx supabase db query --linked --file <(sed "s/REPLACE_WITH_OWNER_EMAIL/owner@example.com/" scripts/bootstrap-owner.sql)`
+     (use `--file`: passed as an argument, the script's leading `--` comment is parsed as
+     a CLI flag and nothing runs).
 
 The script refuses to run with the placeholder, fails if no Auth user has that email, and
 fails if an Owner already exists. Transferring ownership later is a manual SQL operation
