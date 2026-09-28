@@ -22,9 +22,11 @@ Plant Pharmacy Website
    Shipping.
    Customer accounts.
    The website is strictly informational.
+   Visitors never have accounts; there is no customer/client role (see section 5).
    Administrative Panel
-   Accessible only to authenticated employees.
-   Administrators can:
+   Accessible only to authenticated users who hold an application role of Employee or Owner
+   (see section 5). Being signed in to Supabase Auth alone does not grant access.
+   Employees and the Owner can:
    Log in securely.
    Add products.
    Edit products.
@@ -37,6 +39,11 @@ Plant Pharmacy Website
    Edit existing promotions.
    Remove/deactivate promotions.
    Upload promotional images.
+   Additionally, only the Owner can:
+   View employees.
+   Invite employees by email.
+   Revoke/deactivate employee access.
+   Resend employee invitations (potential).
 
 2. Technology Stack
    Frontend
@@ -79,16 +86,18 @@ Plant Pharmacy Website
    │ │ └── Images
    │ │
    │ ├── products
-   │ └── events
+   │ ├── events
+   │ └── user_roles (owner / employee, keyed by auth.users.id)
    │
-   └── Admin authentication
+   └── Admin authentication (identity, passwords, sessions, invitations)
 
 Admin Panel
 │
-├── Login
-├── Dashboard
-├── Product Management
-└── Event Management
+├── Login                 (Employee + Owner)
+├── Dashboard             (Employee + Owner)
+├── Product Management    (Employee + Owner)
+├── Event Management      (Employee + Owner)
+└── Employee Management   (Owner only)
 
 4. Database Design
    Products
@@ -196,21 +205,107 @@ AND
 
 ends_at >= current time
 
-5. Authentication
-   Authentication will use Supabase Auth.
+Authorization Records (implemented — Milestone 4)
+Table:
+user_roles
+Records each staff member's application role.
+Field
+Type
+Purpose
+user_id
+UUID PRIMARY KEY
+References auth.users.id, ON DELETE CASCADE (one record per staff user)
+role
+TEXT
+CHECK role in ('owner', 'employee')
+created_at / updated_at
+TIMESTAMPTZ
+Record history (updated_at maintained by public.set_updated_at())
+Partial unique index user_roles_single_owner: at most one owner row.
+The table stores no email, password, or other credential; identity data stays in Supabase Auth.
+A Supabase Auth user with no authorization record has no application permissions.
+No generic RBAC/permissions system: exactly two roles until the business needs more.
+Not writable through the Data API by anyone (Owner included); an authenticated user can
+read only their own row. Role changes happen through privileged server-side access
+(Milestone 6) or the manual Owner bootstrap (README, "Bootstrapping the Owner").
+
+5. Authentication & Authorization
+   Authentication vs Authorization
+   Authentication answers: "Who is this user?"
+   Supabase Auth handles this: identity, email, password authentication, sessions,
+   invitation emails and other authentication-related functionality.
+   Authorization answers: "What is this authenticated user allowed to do?"
+   The application/database authorization model handles this, using the authorization
+   records described in section 4.
+   An authenticated Supabase user is NOT automatically an Employee.
+   Checking auth.uid() IS NOT NULL is therefore insufficient for administrative write
+   authorization. Administrative database policies and server-side checks must verify
+   the user's application role.
    Passwords must never be stored inside application database tables.
-   Initially, authenticated accounts are assumed to represent authorized employees.
-   Public registration is not required.
-   Potential future authorization structure:
-   auth.users
+
+   Access Levels
+   1. Public Visitor
+   Has no account and does not authenticate.
+   Can access the public website, browse products intended for public display, and view
+   currently relevant promotions/events.
+   Cannot access administrative pages.
+   Cannot create, modify, or delete application data.
+   There is no client/customer database role and no customer account system.
+   2. Employee (authenticated, role = employee)
+   Can access the administrative dashboard.
+   Can create and edit products, remove/archive products where supported, and change
+   product availability and featured status.
+   Can create and edit events/promotions and deactivate/remove them.
+   Will eventually manage product/promotional images through the admin interface.
+   Cannot create or remove other employees, change any user's role, promote themselves
+   to Owner, or access Owner-only account-management functionality.
+   3. Owner (authenticated, role = owner)
+   Has all Employee capabilities.
+   Additionally manages employee access: view employees, invite/create employee accounts,
+   revoke/deactivate employee access, potentially resend invitations, and use the
+   Owner-only employee-management UI (/admin/employees).
+   There is initially exactly one Owner unless requirements change (enforced by the
+   user_roles_single_owner index).
+   The initial Owner account is bootstrapped manually during application
+   setup/deployment: invite the Owner through Supabase Auth, then run
+   scripts/bootstrap-owner.sql in the SQL Editor (README, "Bootstrapping the Owner").
+
+   Role hierarchy:
+   auth.users (Supabase Auth: identity)
    │
    ▼
-   profiles / user_roles
+   authorization record (application: role)
    │
    ├── owner
-   ├── administrator
    └── employee
-   Roles should only be introduced if different permission levels become necessary.
+
+   Public Registration
+   Public account registration is NOT part of the application. Visitors do not need
+   accounts. Employees enter the system only through the Owner-controlled invitation
+   process, so no administrative access may depend on public self-registration.
+
+   Employee Invitation Flow (planned — Owner Employee Management milestone)
+   1. Owner signs into the administrative system.
+   2. Owner opens employee management (/admin/employees).
+   3. Owner enters the employee's email address.
+   4. The request is sent to a protected Next.js server-side action/endpoint.
+   5. The server verifies that the requesting user is an Owner.
+   6. The server uses privileged Supabase server-side functionality to create/invite the employee.
+   7. Supabase sends an invitation email to the employee.
+   8. The employee follows the invitation link.
+   9. The employee establishes their own password.
+   10. The employee can then sign in and use Employee administrative functionality.
+   The Owner never chooses, knows, stores, or emails an employee's password.
+   Passwords remain entirely under Supabase Auth.
+
+   Privileged Supabase Operations
+   Inviting/creating users requires a privileged Supabase credential (secret/service-role key).
+   It is used only in server-side code, in a server-only environment variable (no
+   NEXT_PUBLIC_ prefix), introduced no earlier than the Owner Employee Management milestone.
+   It must NEVER be exposed through NEXT_PUBLIC_* variables, sent to the browser, included in
+   client-side JavaScript, stored in public source code, or committed to Git.
+   The Owner dashboard calls protected server-side application functionality; being an Owner
+   never causes privileged credentials to become available to the browser.
 
 6. Storage
    Supabase Storage will store images.
@@ -234,6 +329,47 @@ ends_at >= current time
    Supabase Row Level Security should be enabled where appropriate.
    The application must not rely solely on client-side authentication checks.
    Secrets and privileged Supabase credentials must never be exposed to the browser.
+   Being authenticated is not authorization: administrative writes require an Employee or
+   Owner role verified by database policies (and by server-side checks in the application).
+   Employee management is Owner-only and is verified server-side before any privileged
+   Supabase operation runs.
+   Users must not be able to grant themselves a role or change their own or anyone else's
+   role; the authorization records must themselves be protected by RLS.
+   Public self-registration must not grant any administrative access.
+
+   Authorization Model
+   PUBLIC VISITOR (anonymous)
+   Products: read all product rows. is_available does not control visibility: unavailable
+   products are shown as "currently unavailable". (If an archive flag is added later,
+   archived rows will be excluded.)
+   Events: read only currently relevant events
+   (is_active = true AND starts_at <= current time AND ends_at >= current time).
+   Writes: none.
+   Employee management: no access.
+
+   AUTHENTICATED USER WITHOUT A ROLE
+   Treated like a Public Visitor for data access. No administrative access, no writes.
+
+   EMPLOYEE
+   Products: read, create, update, delete/archive as supported.
+   Events: read, create, update, delete/deactivate as supported.
+   Employee management: no access.
+
+   OWNER
+   Products: same management permissions as Employee.
+   Events: same management permissions as Employee.
+   Employee management: Owner-only (view, invite, revoke/deactivate).
+
+   Enforcement (Milestone 4)
+   PostgreSQL grants: anon has SELECT on products/events only; authenticated has
+   SELECT/INSERT/UPDATE/DELETE on products/events and SELECT on user_roles; no TRUNCATE
+   and no user_roles writes for either; service_role (server-only) has all.
+   RLS policies: products readable by everyone; events readable by everyone when
+   currently visible and by staff always; product/event writes only when
+   private.is_staff(); user_roles readable only for the caller's own row.
+   private.is_staff(): SECURITY INVOKER, search_path pinned, in the private schema (not
+   exposed through the Data API), EXECUTE for authenticated only.
+   Application roles are read from user_roles, never from JWT claims or user_metadata.
 
 8. Public Routes
    Planned routes:
@@ -249,8 +385,9 @@ ends_at >= current time
    Contact/location information.
 
 9. Administrative Routes
+   All routes except /admin/login require an Employee or Owner role.
    /admin/login
-   Employee authentication.
+   Employee/Owner authentication.
    /admin
    Administrative dashboard.
    /admin/products
@@ -265,6 +402,11 @@ ends_at >= current time
    Create promotion/event.
    /admin/events/[id]/edit
    Edit promotion/event.
+   /admin/employees
+   Employee management: list, invite, revoke/deactivate. Owner only.
+   Employees are denied access (enforced server-side, not only by hiding the link).
+   The route through which an invited employee sets their password is defined in the
+   Owner Employee Management milestone.
 
 10. Implementation Milestones
 
@@ -331,7 +473,7 @@ Environment variables are documented.
 Production build succeeds.
 
 Milestone 3 — Database Schema
-Status: ⬜ NOT STARTED
+Status: ✅ COMPLETE
 Goals:
 Create the core application database.
 Tasks:
@@ -351,46 +493,72 @@ Events can be created and queried.
 Database can be recreated from migrations.
 
 Milestone 4 — Database Security / RLS
-Status: ⬜ NOT STARTED
+Status: ✅ COMPLETE
 Goals:
-Secure the database before building administrative CRUD features.
+Secure the database before building administrative CRUD features, using the
+Owner/Employee authorization model (sections 5 and 7).
 Tasks:
+Create the minimal authorization structure required to distinguish Owner and Employee
+(profiles or user_roles; see section 4).
+Associate authorization records with Supabase Auth users (auth.users.id).
+Restrict allowed roles to owner and employee.
 Enable RLS on products.
 Enable RLS on events.
-Define public read policies.
-Define authenticated administrative write policies.
-Test anonymous access.
-Test authenticated access.
-Test unauthorized write attempts.
+Implement public product read policy (final decision: all rows public; is_available only affects display).
+Implement public event read policy (is_active and starts_at <= now() and ends_at >= now()).
+Implement authenticated Employee/Owner management policies (read all, create, update, delete).
+Ensure merely being authenticated does not grant administrative write access
+(policies check the role, not only auth.uid() IS NOT NULL).
+Consider security of the authorization table itself (enable RLS; no user can grant or
+change roles, including their own).
+Establish how the initial Owner is bootstrapped.
+Test anonymous, Employee, Owner, and unauthorized authenticated-user access.
+Ship together with the Milestone 3 migration when first applying to the hosted project.
 Expected behavior:
 Anonymous
-READ products ✓
-READ events ✓
+READ products (all rows) ✓
+READ events (currently relevant only) ✓
 CREATE product ✗
 UPDATE product ✗
 DELETE product ✗
 CREATE event ✗
 UPDATE event ✗
 DELETE event ✗
+Modify authorization records ✗
 
-Authorized employee
-READ ✓
+Authenticated user without a role
+Same as Anonymous
+
+Employee
+READ (all products/events) ✓
 CREATE ✓
 UPDATE ✓
 DELETE/ARCHIVE ✓
+Modify authorization records ✗
+
+Owner
+Same product/event permissions as Employee ✓
+Modify authorization records directly through the public API ✗
+(employee access is managed through server-side actions in Milestone 6)
 Completion criteria:
 Security rules are enforced by Supabase/PostgreSQL rather than only by the UI.
+Authentication alone never grants write access; the Owner/Employee role is verified.
+The initial Owner can be bootstrapped using a documented procedure.
 
 Milestone 5 — Admin Authentication
 Status: ⬜ NOT STARTED
 Goals:
-Allow authorized employees to access administrative functionality.
+Allow Employees and the Owner to access administrative functionality.
 Tasks:
-Build admin login page.
+Build admin login page (shared by Employee and Owner).
 Implement Supabase login.
 Implement logout.
 Protect /admin.
 Protect administrative child routes.
+Check the user's application role server-side, not only that a session exists.
+Deny signed-in users without an Employee/Owner role.
+Make the user's role available to server code so Owner-only areas can be gated.
+Confirm public sign-up is disabled on the hosted project (supabase/config.toml already disables it locally since Milestone 4).
 Handle expired sessions.
 Handle invalid credentials.
 Redirect unauthenticated visitors.
@@ -398,10 +566,40 @@ Verify authenticated sessions survive navigation.
 Completion criteria:
 Anonymous visitor:
 /admin → redirected to login
-Authenticated employee:
+Authenticated user without a role:
+/admin → access denied
+Employee:
+/admin → dashboard
+Owner:
 /admin → dashboard
 
-Milestone 6 — Admin Product Management
+Milestone 6 — Owner Employee Management
+Status: ⬜ NOT STARTED
+Goals:
+Allow the Owner to securely manage Employee access without directly using the Supabase dashboard.
+Tasks:
+Owner-only employee-management route (/admin/employees).
+List employees.
+Invite employee by email.
+Protected server-side invitation action/endpoint.
+Verify Owner authorization server-side.
+Send employee invitation through Supabase.
+Employee establishes own password.
+Revoke/deactivate employee access.
+Handle duplicate/existing email cases.
+Handle invitation failures.
+Ensure Employees cannot access this functionality.
+Ensure privileged Supabase credentials never reach the browser.
+Completion criteria:
+The Owner can invite an Employee through the application.
+The Employee receives the appropriate invitation flow and establishes their own credentials.
+The Employee can subsequently sign in.
+The Employee receives Employee permissions.
+The Employee cannot manage other users.
+The Owner can revoke/deactivate Employee access.
+All privileged user-management operations occur server-side.
+
+Milestone 7 — Admin Product Management
 Status: ⬜ NOT STARTED
 Goals:
 Implement complete product management.
@@ -416,9 +614,9 @@ Validate product input.
 Generate/validate slugs.
 Display success/error feedback.
 Completion criteria:
-An employee can manage the complete product catalog without directly accessing Supabase.
+An Employee (or the Owner) can manage the complete product catalog without directly accessing Supabase.
 
-Milestone 7 — Image Storage
+Milestone 8 — Image Storage
 Status: ⬜ NOT STARTED
 Goals:
 Support product and promotional imagery.
@@ -436,10 +634,10 @@ Handle deleted/archived content appropriately.
 Completion criteria:
 An administrator can upload an image through the application and the image appears on the corresponding public content.
 
-Milestone 8 — Admin Event/Promotion Management
+Milestone 9 — Admin Event/Promotion Management
 Status: ⬜ NOT STARTED
 Goals:
-Allow employees to manage temporary website content.
+Allow Employees and the Owner to manage temporary website content.
 Tasks:
 Event list.
 Create event.
@@ -465,7 +663,7 @@ Active:
 Yes
 and the system has enough information to determine whether it should currently be displayed.
 
-Milestone 9 — Public Product Catalog
+Milestone 10 — Public Product Catalog
 Status: ⬜ NOT STARTED
 Goals:
 Expose product information publicly.
@@ -484,7 +682,7 @@ Responsive layout.
 Completion criteria:
 Visitors can browse and inspect the pharmacy's product catalog without authentication.
 
-Milestone 10 — Public Promotion System
+Milestone 11 — Public Promotion System
 Status: ⬜ NOT STARTED
 Goals:
 Automatically display currently relevant promotions.
@@ -500,7 +698,7 @@ Completion criteria:
 Expired promotions disappear without requiring an employee to manually remove them.
 Future promotions remain hidden until their start time.
 
-Milestone 11 — Landing Page
+Milestone 12 — Landing Page
 Status: ⬜ NOT STARTED
 Goals:
 Create the primary marketing experience.
@@ -525,7 +723,7 @@ Trustworthy.
 Responsive.
 Avoid generic "template" appearance.
 
-Milestone 12 — About & Contact
+Milestone 13 — About & Contact
 Status: ⬜ NOT STARTED
 Tasks:
 About page.
@@ -539,7 +737,7 @@ Social links if applicable.
 Completion criteria:
 Visitors can easily determine what the pharmacy is, where it is, and how to contact it.
 
-Milestone 13 — UX / Responsive Polish
+Milestone 14 — UX / Responsive Polish
 Status: ⬜ NOT STARTED
 Tasks:
 Mobile testing.
@@ -556,7 +754,7 @@ Keyboard navigation.
 Image optimization.
 Layout shift review.
 
-Milestone 14 — SEO & Metadata
+Milestone 15 — SEO & Metadata
 Status: ⬜ NOT STARTED
 Tasks:
 Site metadata.
@@ -569,14 +767,19 @@ Robots configuration.
 Semantic HTML.
 Canonical URLs where necessary.
 
-Milestone 15 — Security Review
+Milestone 16 — Security Review
 Status: ⬜ NOT STARTED
 Verify:
 RLS enabled correctly.
 Anonymous users cannot write.
+Authenticated users without a role cannot write or access admin routes.
+Employees cannot access employee management or change roles.
+Authorization records cannot be modified through the public API.
 Admin routes protected.
 Admin mutations protected server-side.
-No service-role key exposed.
+Owner-only actions verify the Owner role server-side.
+No service-role/secret key exposed (not in NEXT_PUBLIC_ variables or client bundles).
+Public sign-up disabled.
 Environment secrets protected.
 Inputs validated.
 Uploads validated.
@@ -584,7 +787,7 @@ Authentication errors handled safely.
 No sensitive information logged.
 Authorization tested manually.
 
-Milestone 16 — Testing & QA
+Milestone 17 — Testing & QA
 Status: ⬜ NOT STARTED
 Test complete workflows.
 Public
@@ -606,19 +809,29 @@ Image upload works.
 Event creation works.
 Event editing works.
 Event expiration works.
+Owner
+Owner can invite an Employee.
+Invited Employee sets their own password and signs in.
+Owner can revoke/deactivate an Employee; revoked Employee loses access.
 Security
 Anonymous write attempts fail.
 Anonymous admin access fails.
+Authenticated users without a role are denied admin access and writes.
+Employees cannot access /admin/employees or its server actions.
 Invalid sessions fail safely.
 Direct API/database attempts respect authorization.
 
-Milestone 17 — Deployment
+Milestone 18 — Deployment
 Status: ⬜ NOT STARTED
 Tasks:
 Select hosting environment.
 Configure production environment variables.
 Configure production Supabase settings.
-Configure authentication URLs.
+Configure authentication URLs (including invitation redirect URLs).
+Configure invitation email template/SMTP if required.
+Disable public sign-up.
+Store the privileged Supabase key only as a server-side environment variable.
+Bootstrap the initial Owner account.
 Configure domain.
 Configure HTTPS.
 Run migrations.
@@ -626,49 +839,30 @@ Build production application.
 Deploy.
 Perform production smoke test.
 Completion criteria:
-The public website is reachable through its production domain and the administrative system works correctly in production.
+The public website is reachable through its production domain and the administrative system works correctly in production for both the Owner and Employees.
 
 11. Project Progress
-    Milestone
-    Status
-12. Specification
-    ✅ Complete
-13. Project Foundation
-    ✅ Complete
-14. Supabase Foundation
-    ✅ Complete
-15. Database Schema
-    ⬜ Not Started
-16. Database Security / RLS
-    ⬜ Not Started
-17. Admin Authentication
-    ⬜ Not Started
-18. Admin Product Management
-    ⬜ Not Started
-19. Image Storage
-    ⬜ Not Started
-20. Admin Event Management
-    ⬜ Not Started
-21. Public Product Catalog
-    ⬜ Not Started
-22. Public Promotion System
-    ⬜ Not Started
-23. Landing Page
-    ⬜ Not Started
-24. About & Contact
-    ⬜ Not Started
-25. UX / Responsive Polish
-    ⬜ Not Started
-26. SEO & Metadata
-    ⬜ Not Started
-27. Security Review
-    ⬜ Not Started
-28. Testing & QA
-    ⬜ Not Started
-29. Deployment
-    ⬜ Not Started
+    Milestone 0 — Specification: ✅ Complete
+    Milestone 1 — Project Foundation: ✅ Complete
+    Milestone 2 — Supabase Foundation: ✅ Complete
+    Milestone 3 — Database Schema: ✅ Complete
+    Milestone 4 — Database Security / RLS: ✅ Complete
+    Milestone 5 — Admin Authentication: ⬜ Not Started
+    Milestone 6 — Owner Employee Management: ⬜ Not Started
+    Milestone 7 — Admin Product Management: ⬜ Not Started
+    Milestone 8 — Image Storage: ⬜ Not Started
+    Milestone 9 — Admin Event Management: ⬜ Not Started
+    Milestone 10 — Public Product Catalog: ⬜ Not Started
+    Milestone 11 — Public Promotion System: ⬜ Not Started
+    Milestone 12 — Landing Page: ⬜ Not Started
+    Milestone 13 — About & Contact: ⬜ Not Started
+    Milestone 14 — UX / Responsive Polish: ⬜ Not Started
+    Milestone 15 — SEO & Metadata: ⬜ Not Started
+    Milestone 16 — Security Review: ⬜ Not Started
+    Milestone 17 — Testing & QA: ⬜ Not Started
+    Milestone 18 — Deployment: ⬜ Not Started
 
-30. Development Log
+12. Development Log
     Use this section to record completed work.
     Entry Template
     YYYY-MM-DD — Milestone X
@@ -737,7 +931,120 @@ The public website is reachable through its production domain and the administra
     Next milestone
     Milestone 3 — Database Schema
 
-31. AI Development Workflow
+    2026-09-28 — Milestone 3
+    Completed
+    Supabase CLI project layout (supabase/config.toml via `supabase init`, project_id plant-pharmacy, Postgres 17)
+    products and events tables with gen_random_uuid() primary keys and timestamptz created_at/updated_at
+    Reusable trigger function public.set_updated_at() (search_path pinned to '') with BEFORE UPDATE triggers on both tables
+    Constraints: products_slug_key (unique), products_name_not_blank, products_slug_format
+    (lowercase kebab-case, rejects empty/whitespace), products_price_non_negative (numeric(10,2), nullable),
+    events_title_not_blank, events_ends_after_starts (strictly later)
+    Defaults: is_available true, is_featured false, is_active true
+    Development seed (supabase/seed.sql): Chamomile Tea, Herbal Balm, Autumn Herbal Tea Week;
+    loaded only by local `supabase db reset`, never by `db push`
+    RLS deliberately not configured (Milestone 4)
+    Files created
+    supabase/config.toml, supabase/.gitignore
+    supabase/migrations/20260928084238_create_products_and_events.sql
+    supabase/seed.sql
+    Files modified
+    PROJECT.md, README.md
+    Database changes
+    Migration 20260928084238_create_products_and_events: function set_updated_at, tables products and events,
+    triggers products_set_updated_at and events_set_updated_at
+    Not yet applied to the hosted Supabase project (must ship together with Milestone 4 RLS)
+    Tests performed
+    No Docker/Supabase CLI local stack/psql on the dev machine, so tests ran against PGlite 0.5.8
+    (PostgreSQL 18.3 compiled to WASM), fresh in-memory database, migration + seed applied from the repo files:
+    33/33 checks passed — UUID/timestamp/default generation, query, updated_at trigger on both tables
+    (including overriding an explicit updated_at), duplicate slug, negative price (insert and update),
+    empty/whitespace/tab-only/null name, empty/whitespace/uppercase/space slug, end before start,
+    equal start/end (insert and update), empty/whitespace title, missing starts_at, visibility query,
+    identical schema from two fresh databases
+    npm run lint, npm run typecheck, npm run build: pass
+    Known issues
+    Migration not yet verified on the Supabase Postgres image (supabase start / db reset need Docker)
+    Next milestone
+    Milestone 4 — Database Security / RLS
+
+    2026-09-28 — Documentation / Design (before Milestone 4)
+    Completed
+    Authorization architecture changed before Milestone 4 to formally distinguish three access levels:
+    anonymous Public Visitors (no accounts, read-only public content),
+    authenticated Employees (product/event management),
+    and an authenticated Owner (Employee capabilities plus Owner-only employee management)
+    Being authenticated no longer implies being an employee: administrative access requires an
+    owner/employee application role stored in an authorization record keyed by auth.users.id
+    Employee onboarding will use an Owner-controlled invitation workflow (Supabase invitation email,
+    employee sets own password) rather than Owner-assigned passwords
+    Privileged Supabase key reserved for server-side use only; public sign-up not part of the application
+    Roadmap: Milestone 4 extended (authorization table, role-based policies, Owner bootstrap);
+    Milestone 5 covers Owner and Employee login; new Milestone 6 — Owner Employee Management;
+    former Milestones 6–17 renumbered to 7–18; route /admin/employees added to the specification
+    Files created
+    None
+    Files modified
+    PROJECT.md, README.md
+    Database changes
+    None
+    Tests performed
+    None (documentation only)
+    Known issues
+    None
+    Next milestone
+    Milestone 4 — Database Security / RLS
+
+    2026-09-28 — Milestone 4
+    Completed
+    Authorization table public.user_roles (user_id PK/FK auth.users on delete cascade, role
+    text CHECK owner/employee, created_at/updated_at reusing public.set_updated_at(),
+    partial unique index user_roles_single_owner)
+    Role helper private.is_staff(): SECURITY INVOKER, search_path '', private schema not
+    exposed through the Data API, EXECUTE for authenticated only
+    RLS enabled on products, events, user_roles with policies products_select_public,
+    products_{insert,update,delete}_staff, events_select_public, events_select_staff,
+    events_{insert,update,delete}_staff, user_roles_select_own (no user_roles write policies)
+    Explicit grants replacing Supabase's permissive defaults (no TRUNCATE for API roles,
+    anon read-only, no user_roles writes except service_role); EXECUTE on
+    public.set_updated_at() revoked from API roles
+    Final public product decision: all product rows public, is_available is display-only
+    Public sign-up disabled in supabase/config.toml ([auth] and [auth.email]); hosted setting
+    documented as a manual step
+    Owner bootstrap: scripts/bootstrap-owner.sql (placeholder email, fails safely) + README procedure
+    Files created
+    supabase/migrations/20260928090452_add_authorization_and_rls.sql
+    scripts/bootstrap-owner.sql
+    Files modified
+    supabase/config.toml, README.md, PROJECT.md
+    Database changes
+    Migration 20260928090452_add_authorization_and_rls (table, index, trigger, schema,
+    function, grants, RLS, 10 policies). Not applied to the hosted project.
+    Tests performed
+    No Docker, so no Supabase local stack. Tests ran on real PostgreSQL 17.10 binaries
+    (embedded-postgres) plus real PostgREST 16.4, outside the repo, with a Supabase emulation:
+    anon/authenticated/service_role/authenticator roles, auth.users, Supabase's auth.uid()
+    definition, Supabase's permissive default privileges, migrations run as a NON-superuser
+    postgres role. 148/148 checks passed:
+    migrations + seed apply in order to two fresh databases with identical
+    schema/policy/grant fingerprints; bootstrap script (placeholder refused, unknown email
+    refused, owner assigned, second owner refused); role CHECK/FK/PK/cascade/updated_at;
+    SQL-level SET ROLE + request.jwt.claims (TRUNCATE denied, RLS cannot be disabled,
+    is_staff() results, auth.users unreadable, JWT/user_metadata role claims ignored);
+    full HTTP access matrix through PostgREST with HS256-signed JWTs for anon (no token and
+    anon JWT), authenticated without role, employee and owner, including user_roles
+    insert/upsert/update/delete attempts, RPC exposure of helpers, forged/expired tokens,
+    role revocation
+    Mutation checks: weakening is_staff() to "any authenticated user" -> 18 failures;
+    removing the explicit REVOKEs -> 24 failures (tests detect both)
+    npm run lint, npm run typecheck, npm run build: pass
+    Known issues
+    Not verified against the Supabase Postgres image, GoTrue-issued tokens, or the hosted
+    project (Docker unavailable; hosted push intentionally not performed)
+    Hosted sign-up setting and Owner bootstrap are manual deployment steps
+    Next milestone
+    Milestone 5 — Admin Authentication
+
+13. AI Development Workflow
     Claude will perform most implementation work.
     Claude should NOT be given unrestricted instructions such as:
     Build milestone 5.
@@ -754,7 +1061,7 @@ The public website is reachable through its production domain and the administra
     Required implementation report.
     Claude should inspect the existing codebase before making changes rather than assuming the current architecture.
 
-32. Required Claude Completion Report
+14. Required Claude Completion Report
     After every implementation task, Claude should provide:
     IMPLEMENTATION REPORT
 
@@ -799,9 +1106,14 @@ The report should be saved/copied into the development workflow so another devel
 
 16. Current State
     Current milestone:
-    Milestone 3 — Database Schema
+    Milestone 5 — Admin Authentication
     Project status:
-    Milestones 1–2 complete. Application connects to Supabase (browser/server clients,
-    proxy session refresh, env configuration verified). No application schema yet.
+    Milestones 1–4 complete. Application connects to Supabase (browser/server clients,
+    proxy session refresh, env configuration verified). products, events and user_roles
+    exist as migrations with RLS, role-checked policies and explicit grants
+    (sections 4, 5, 7). The migrations have NOT been applied to the hosted project yet;
+    apply both together (README, "Deploying the database"), disable public sign-up on the
+    hosted project, then bootstrap the Owner.
     Next action:
-    Create the products and events tables via migrations (Milestone 3).
+    Milestone 5: admin login/logout and /admin protection, resolving the user's role
+    server-side from user_roles (the user can read their own row).
