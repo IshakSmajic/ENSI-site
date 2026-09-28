@@ -8,15 +8,14 @@ See [PROJECT.md](PROJECT.md) for the full specification and milestone plan.
 
 ## Current state
 
-Milestones 1–4 (Project Foundation, Supabase Foundation, Database Schema, Database
-Security / RLS) are complete. The application is a minimal placeholder page wired to
-Supabase: browser and server clients and session-refreshing proxy exist, and the
-`products`, `events` and `user_roles` tables with Row Level Security are defined as
-migrations. Both migrations are applied to the hosted Supabase project and verified
-there (2026-09-28): RLS, grants and policies checked in the live catalog, public sign-up
-disabled, the Owner bootstrapped, and a smoke test run with a real Owner session.
-Authentication UI, features, and
-design have not been implemented yet.
+Milestones 1–5 (Project Foundation, Supabase Foundation, Database Schema, Database
+Security / RLS, Admin Authentication) are complete. The public site is still a placeholder
+page. The `products`, `events` and `user_roles` tables with Row Level Security are applied
+to the hosted Supabase project and verified there (2026-09-28). Staff can sign in at
+`/admin/login` and reach a minimal `/admin` dashboard (see [Admin authentication](#admin-authentication));
+the Owner sign-in flow has been verified against the hosted project (2026-09-28).
+Product/event management, employee management and the visual design are not
+implemented yet.
 
 ## Access model
 
@@ -32,8 +31,8 @@ Signing in is not enough to get admin access: a user also needs an `owner` or `e
 role in an application authorization record. There is no public sign-up. The Owner invites
 each Employee through Supabase, and the Employee then sets their own password. Any
 privileged Supabase key used for invitations stays in server-side code only. The database
-side (roles and RLS) is implemented; login and employee management come in Milestones 5
-and 6.
+side (roles and RLS) and staff login are implemented; employee management comes in
+Milestone 6.
 
 ## Technology foundation
 
@@ -46,7 +45,9 @@ and 6.
 
 ## Prerequisites
 
-- Node.js 20.9 or later (current LTS recommended)
+- Node.js 22.18 or later on the 22.x line, or 23.6 or later (current LTS recommended).
+  Supabase's client libraries require Node 22, and `npm test` needs Node's built-in
+  TypeScript type stripping, which is on by default from 22.18 / 23.6.
 - npm (bundled with Node.js)
 - A Supabase project (https://supabase.com/dashboard)
 
@@ -95,6 +96,7 @@ the browser; everything else is server-only.
 | `npm run start`     | Serve the production build (run `build` first)     |
 | `npm run lint`      | Run ESLint                                         |
 | `npm run typecheck` | Generate Next.js route types and run `tsc --noEmit` |
+| `npm test`          | Run the unit tests in `tests/` (Node's built-in test runner) |
 | `npm run check:supabase` | Check the configured Supabase project is reachable and accepts the key (reads `.env.local`) |
 
 ## Database
@@ -183,7 +185,7 @@ once per environment by a deliberate manual step:
 1. Dashboard → Authentication → Users → Add user → **Create new user** with the Owner's
    email; the Owner types their own password and "Auto Confirm User" is ticked. (Do not
    use "Invite user" yet: the application has no page to accept an invitation and set a
-   password until Milestones 5/6.)
+   password until Milestone 6.)
 2. Run [scripts/bootstrap-owner.sql](scripts/bootstrap-owner.sql) with
    `REPLACE_WITH_OWNER_EMAIL` replaced by the Owner's email **outside the repository**
    (never commit it), either:
@@ -198,6 +200,82 @@ fails if an Owner already exists. Transferring ownership later is a manual SQL o
 (delete or demote the current owner row, then insert the new one in the same
 transaction).
 
+## Admin authentication
+
+Staff (Owner and Employees) sign in at **`/admin/login`** with email and password through
+Supabase Auth. There is no sign-up form, registration link or other way to create an
+account in the application, and public sign-up stays disabled in Supabase (see
+[Auth settings](#auth-settings-no-public-sign-up)).
+
+**Provisioning accounts.** Accounts are created administratively, never by the public:
+the Owner was created in the Supabase Dashboard and given the `owner` role with
+[scripts/bootstrap-owner.sql](scripts/bootstrap-owner.sql) (see
+[Bootstrapping the Owner](#bootstrapping-the-owner)). Employees will be invited by the Owner
+from `/admin/employees` (Milestone 6). Until then, an Employee would need an Auth user
+created in the Dashboard plus a `user_roles` row with role `employee` inserted with SQL by a
+privileged database user; none exist today.
+
+**Authorization.** A session alone is not enough. Every `/admin` route except
+`/admin/login` requires the signed-in user to have an `owner` or `employee` row in
+`user_roles`. The role is read with the user's own session and the publishable key (the
+`user_roles_select_own` RLS policy lets users read only their own row); no privileged key
+is used and no RLS policy was changed.
+
+| Visitor                                    | `/admin` and child routes                          | `/admin/login`                    |
+| ------------------------------------------ | -------------------------------------------------- | --------------------------------- |
+| No session (or expired/invalid session)    | Redirect to `/admin/login`                         | Login form                        |
+| Signed in, `owner`/`employee` role         | Allowed                                            | Redirect to `/admin`              |
+| Signed in, no staff role                   | Session is signed out, redirect to `/admin/login?error=unauthorized` ("This account does not have access to the admin area.") | Login form (no redirect loop) |
+| Role could not be read (network/DB error)  | Redirect to `/admin/login?error=unavailable`; session kept, access denied (fails closed) | Login form |
+
+Signing in with valid credentials for an account without a staff role is refused the same
+way: the new session is signed out immediately and the form shows the "does not have
+access" message. Wrong credentials always show "Invalid email or password.", whether or
+not the email exists.
+
+**Where the checks run.** All of these checks run on the server:
+
+1. [src/proxy.ts](src/proxy.ts) runs on every request. It refreshes the session and, for
+   `/admin/*` except `/admin/login`, verifies the JWT (`getClaims()`) and looks up the
+   role. This covers page loads, client-side navigations and Server Function POSTs,
+   so new admin routes are protected automatically.
+2. [src/lib/auth/staff.ts](src/lib/auth/staff.ts) is the data access layer:
+   `requireStaff()` returns `{ id, email, role }` or redirects. The layout of the
+   `src/app/admin/(dashboard)/` route group calls it, and every admin page and Server
+   Function that reads or changes admin data must call it too, because layouts do not
+   re-run on client navigation.
+3. RLS in the database still enforces every write, whatever the UI does.
+
+Put new admin pages inside `src/app/admin/(dashboard)/`. The role rules live in
+[src/lib/auth/roles.ts](src/lib/auth/roles.ts).
+
+**Logout.** The "Log out" button in the admin header calls a Server Function that revokes
+the current session (`signOut({ scope: "local" })`, so other devices stay signed in),
+clears the auth cookies and redirects to `/admin/login`. After that, `/admin` redirects
+back to the login page.
+
+**Sessions.** Sessions live in the standard `@supabase/ssr` auth cookies and survive
+navigation and page refreshes. The proxy refreshes expired access tokens with the refresh
+token, and a session whose refresh fails is treated as signed out. The hosted project
+signs JWTs with an asymmetric key (ES256), so `getClaims()` verifies them locally. As a
+result, a copy of an access token taken before logout stays cryptographically valid until
+it expires (1 hour by default), although the refresh token is revoked immediately.
+Revoking a user's role takes effect on their next request, because the role is read from
+`user_roles` on every admin request.
+
+**Manual check (Owner, per environment).** With `npm run dev` (or the deployed site):
+open `/admin` and confirm it sends you to `/admin/login`. Sign in and confirm you land on
+`/admin`, which shows your email and "Owner". Refresh, go to `/` and back to `/admin`: you
+should still be signed in. Open `/admin/login` and confirm it sends you to `/admin`. Click
+"Log out" and confirm you land on `/admin/login`, and that `/admin` now redirects there
+again. A wrong password shows "Invalid email or password.".
+
+This check passed for the real Owner account on the hosted project on 2026-09-28 (login,
+role shown as Owner, session kept across refresh and navigation, `/admin/login` redirect,
+logout, `/admin` protected afterwards). The Employee and no-role paths have not been run
+against the hosted project, because no such accounts exist there. They are covered by the
+local end-to-end tests and the Milestone 4 RLS tests.
+
 ## Project structure
 
 ```
@@ -207,13 +285,22 @@ src/
     page.tsx      Home page (placeholder)
     globals.css   Global styles
     favicon.ico
+    admin/
+      actions.ts          logout Server Function
+      login/              /admin/login: page, client form, login Server Function
+      (dashboard)/        Protected admin routes: layout (requireStaff + header) and /admin page
   lib/
+    auth/
+      roles.ts    Admin authorization rules (role parsing, protected paths, role lookup, messages)
+      staff.ts    Server-only data access layer: getAdminAccess(), requireStaff()
     supabase/
       env.ts      Reads/validates the public Supabase env vars
       client.ts   Supabase client for Client Components (browser)
       server.ts   Supabase client for Server Components, Server Functions, Route Handlers (server-only)
-      proxy.ts    Session refresh helper used by the proxy
-  proxy.ts        Next.js proxy (formerly middleware): refreshes the Supabase session cookie
+      proxy.ts    Session refresh + redirect helpers used by the proxy
+  proxy.ts        Next.js proxy (formerly middleware): refreshes the session, guards /admin/*
+tests/
+  auth-roles.test.ts  Unit tests for src/lib/auth/roles.ts (npm test)
 supabase/
   config.toml   Supabase CLI configuration (local stack, seed paths; public sign-up disabled)
   migrations/   Database schema migrations, applied in filename order
@@ -225,6 +312,7 @@ scripts/
 
 Use `@/lib/supabase/server` in server code and `@/lib/supabase/client` in Client
 Components. Importing the server client into a Client Component is a build error.
-The proxy only refreshes sessions; it does not protect any routes yet.
+The proxy refreshes sessions on every request and guards `/admin/*` (see
+[Admin authentication](#admin-authentication)).
 
 Path alias `@/*` maps to `src/*`.

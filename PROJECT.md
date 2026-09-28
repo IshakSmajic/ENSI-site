@@ -406,6 +406,13 @@ read only their own row. Role changes happen through privileged server-side acce
    /admin/employees
    Employee management: list, invite, revoke/deactivate. Owner only.
    Employees are denied access (enforced server-side, not only by hiding the link).
+   Enforcement (Milestone 5): src/proxy.ts checks the session and user_roles for every
+   /admin/* request except /admin/login. Protected pages live in the
+   src/app/admin/(dashboard)/ route group, whose layout calls requireStaff()
+   (src/lib/auth/staff.ts). Pages and Server Functions that touch admin data call it too.
+   Anonymous visitors are redirected to /admin/login. A signed-in user without a staff
+   role has that session signed out and is redirected to /admin/login?error=unauthorized.
+   Staff visiting /admin/login are redirected to /admin.
    The route through which an invited employee sets their password is defined in the
    Owner Employee Management milestone.
 
@@ -547,7 +554,7 @@ Authentication alone never grants write access; the Owner/Employee role is verif
 The initial Owner can be bootstrapped using a documented procedure.
 
 Milestone 5 — Admin Authentication
-Status: ⬜ NOT STARTED
+Status: ✅ COMPLETE (2026-09-28; hosted Owner verification passed, see development log)
 Goals:
 Allow Employees and the Owner to access administrative functionality.
 Tasks:
@@ -848,7 +855,7 @@ The public website is reachable through its production domain and the administra
     Milestone 2 — Supabase Foundation: ✅ Complete
     Milestone 3 — Database Schema: ✅ Complete
     Milestone 4 — Database Security / RLS: ✅ Complete (deployed and verified on hosted Supabase)
-    Milestone 5 — Admin Authentication: ⬜ Not Started
+    Milestone 5 — Admin Authentication: ✅ Complete (hosted Owner verification passed)
     Milestone 6 — Owner Employee Management: ⬜ Not Started
     Milestone 7 — Admin Product Management: ⬜ Not Started
     Milestone 8 — Image Storage: ⬜ Not Started
@@ -1088,6 +1095,106 @@ The public website is reachable through its production domain and the administra
     Next milestone
     Milestone 5 — Admin Authentication
 
+    2026-09-28 — Milestone 5
+    Completed
+    /admin/login: email/password form (useActionState; loading state; safe error messages;
+    no sign-up/registration/user creation anywhere). The login Server Function calls
+    signInWithPassword and then reads the user's own user_roles row. It redirects
+    owner/employee users to /admin. Any other account is signed out immediately and shown
+    "This account does not have access to the admin area."
+    Route protection: src/proxy.ts guards /admin and every child route except /admin/login
+    (getClaims JWT verification + user_roles lookup with the user's session; no service
+    role). No session -> /admin/login. No staff role -> session signed out ->
+    /admin/login?error=unauthorized. Role lookup error -> /admin/login?error=unavailable
+    (fails closed, session kept). Only fixed ?error codes are rendered.
+    Data access layer src/lib/auth/staff.ts: getAdminAccess() (React cache), requireStaff().
+    Called by the (dashboard) route-group layout and the /admin page. The login page
+    redirects staff to /admin and shows the form to everyone else (no redirect loop).
+    /admin dashboard: heading, email, role, "Log out" (Server Function,
+    signOut scope local, redirect to /admin/login)
+    Admin pages marked noindex. Minimal functional CSS in globals.css.
+    Unit tests with Node's built-in runner (npm test; no new dependencies)
+    Files created
+    src/lib/auth/roles.ts, src/lib/auth/staff.ts, src/app/admin/actions.ts,
+    src/app/admin/login/{page.tsx,login-form.tsx,actions.ts},
+    src/app/admin/(dashboard)/{layout.tsx,page.tsx}, tests/auth-roles.test.ts
+    Files modified
+    src/proxy.ts, src/lib/supabase/proxy.ts (returns client/claims; redirect helper that keeps
+    refreshed cookies), src/app/globals.css, package.json (test script),
+    tsconfig.json (allowImportingTsExtensions, for the tests), README.md, PROJECT.md
+    Database changes
+    None. No migrations, no RLS/grant changes, owner row untouched, no users created.
+    Tests performed
+    npm run lint, npm run typecheck, npm run build: pass. npm test: 11/11 pass.
+    End-to-end (outside the repo): production build driven over HTTP by submitting the
+    real forms, against a local mock of the Supabase Auth/PostgREST endpoints (owner,
+    employee, no-role, role-lookup-error and expired-token accounts; RLS own-row
+    emulated): 67/67 checks passed. Checks covered: anonymous redirects for /admin and all
+    listed child routes (including client-navigation requests); login page with no sign-up
+    UI; invalid, unknown-email and empty credentials (generic message, no cookie, empty
+    input never sent to Auth); Owner login -> /admin with email and role shown, refresh and
+    navigation, /admin/login -> /admin; logout clears cookies, revokes the session, and
+    /admin redirects afterwards; replaying pre-logout cookies is rejected; Employee login
+    shows the Employee role; the no-role account is refused at login and its existing
+    session is signed out by the proxy with no redirect loop; role lookup error fails
+    closed; an expired access token is refreshed; an invalid refresh token, a garbage
+    cookie and a forged JWT for the Owner's id all go to login; unknown ?error codes are
+    not rendered; no token material in the HTML. A cross-origin Server Action POST is
+    rejected by Next (500, no cookies).
+    Hosted (real Supabase project, publishable key only): /admin/login 200; /admin,
+    /admin/products, /admin/events/new and /admin/products/x/edit redirect to
+    /admin/login; invalid credentials (a non-existent @example.invalid address) show the
+    generic error, set no cookie, and /admin stays protected. Hosted JWT signing key is
+    ES256 (read from the public JWKS endpoint)
+    Known issues
+    Hosted Owner login/refresh/logout not yet run: it needs the Owner's password, which is
+    not available to the implementer. Run the README "Admin authentication" flow once as
+    the Owner. (Resolved: passed on 2026-09-28, see the next entry.)
+    Hosted no-role and Employee paths not tested (no such accounts exist; not created by
+    design). Covered by the mock end-to-end run and the Milestone 4 RLS tests.
+    With ES256, an access-token copy taken before logout remains valid until it expires
+    (1 hour or less); the refresh token is revoked at logout. Standard Supabase behavior.
+    npm test needs Node 22.18+ (TypeScript type stripping); package engines still say 20.9+
+    (resolved in the final cleanup entry below)
+    Next milestone
+    Milestone 6 — Owner Employee Management
+
+    2026-09-28 — Milestone 5 hosted Owner verification & final cleanup
+    Completed
+    Hosted Owner verification (real Owner account, hosted Supabase project, run manually by
+    the Owner using the README "Admin authentication" check):
+    Anonymous /admin -> /admin/login: PASS
+    Owner login against hosted Supabase: PASS
+    Owner role recognition (email and "Owner" shown on /admin): PASS
+    Session persistence after refresh: PASS
+    Session persistence across navigation (away from and back to /admin): PASS
+    Authenticated /admin/login -> /admin redirect: PASS
+    Logout -> /admin/login: PASS
+    /admin protected after logout: PASS
+    Node requirement corrected. @supabase/* packages declare node >=22.0.0; npm test relies
+    on default TypeScript type stripping (Node 22.18.0 / 23.6.0). The test script
+    passed a directory (node --test tests/), which Node 22 resolves as a module and fails;
+    it now passes a glob that Node expands itself.
+    Files created
+    None
+    Files modified
+    package.json (engines.node ^22.18.0 || >=23.6.0; test script glob), README.md, PROJECT.md
+    Database changes
+    None
+    Tests performed
+    Node 22.18.0: npm ci --dry-run (no engine warnings), npm test 11/11, npm run lint,
+    npm run typecheck, npm run build, next start smoke test (/ 200, /admin -> /admin/login,
+    /admin/login 200): all pass. Node 22.17.0: npm test fails (.ts not supported), which
+    confirms the minimum. Node 26.10.0: npm test, lint, typecheck, build: pass.
+    Known issues
+    Hosted Employee and no-role paths not tested against real hosted accounts (no such
+    accounts exist; not created by design). Covered by the mock end-to-end run and the
+    Milestone 4 RLS tests.
+    With ES256, an access-token copy taken before logout remains valid until it expires
+    (1 hour or less); the refresh token is revoked at logout. Standard Supabase behavior.
+    Next milestone
+    Milestone 6 — Owner Employee Management
+
 13. AI Development Workflow
     Claude will perform most implementation work.
     Claude should NOT be given unrestricted instructions such as:
@@ -1150,13 +1257,18 @@ The report should be saved/copied into the development workflow so another devel
 
 16. Current State
     Current milestone:
-    Milestone 5 — Admin Authentication
+    Milestone 6 — Owner Employee Management
     Project status:
-    Milestones 1–4 complete. Application connects to Supabase (browser/server clients,
+    Milestones 1–5 complete. Staff sign in at /admin/login. /admin and every child route
+    require an owner/employee user_roles row, checked in the proxy and by requireStaff().
+    Logout is in the admin header. Earlier milestones: Application connects to Supabase (browser/server clients,
     proxy session refresh, env configuration verified). products, events and user_roles
     exist as migrations with RLS, role-checked policies and explicit grants
     (sections 4, 5, 7). Both migrations are applied to and verified on the hosted project;
     hosted public sign-up is disabled; the Owner is bootstrapped (one owner, no employees).
+    Owner sign-in, session persistence and logout verified on the hosted project
+    (2026-09-28). Requires Node ^22.18.0 || >=23.6.0.
     Next action:
-    Milestone 5: admin login/logout and /admin protection, resolving the user's role
-    server-side from user_roles (the user can read their own row).
+    Milestone 6: Owner employee management (/admin/employees,
+    invitation acceptance page, server-only privileged key; use requireStaff() and
+    check role === "owner").
