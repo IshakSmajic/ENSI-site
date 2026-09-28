@@ -37,13 +37,24 @@ describe("isProtectedAdminPath", () => {
       "/admin/employees",
       "/admin/login/extra",
       "/admin/loginx",
+      "/admin/accept-invite/extra",
+      "/admin/accept-invitex",
     ]) {
       assert.equal(isProtectedAdminPath(path), true, path);
     }
   });
 
   it("leaves the login page and non-admin routes public", () => {
-    for (const path of ["/admin/login", "/admin/login/", "/", "/products", "/administrator", "/adminx"]) {
+    for (const path of [
+      "/admin/login",
+      "/admin/login/",
+      "/admin/accept-invite",
+      "/admin/accept-invite/",
+      "/",
+      "/products",
+      "/administrator",
+      "/adminx",
+    ]) {
       assert.equal(isProtectedAdminPath(path), false, path);
     }
   });

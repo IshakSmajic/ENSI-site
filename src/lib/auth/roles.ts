@@ -11,6 +11,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const ADMIN_HOME_PATH = "/admin";
 export const ADMIN_LOGIN_PATH = "/admin/login";
+// Where an invited Employee sets their password (linked from the invitation email).
+export const ADMIN_ACCEPT_INVITE_PATH = "/admin/accept-invite";
+export const ADMIN_EMPLOYEES_PATH = "/admin/employees";
 
 export const STAFF_ROLES = ["owner", "employee"] as const;
 export type StaffRole = (typeof STAFF_ROLES)[number];
@@ -19,10 +22,13 @@ export function parseStaffRole(value: unknown): StaffRole | null {
   return STAFF_ROLES.find((role) => role === value) ?? null;
 }
 
-/** Every /admin route except the login page requires an Owner or Employee. */
+/**
+ * Every /admin route except the login and accept-invite pages requires an Owner or
+ * Employee. Owner-only pages (/admin/employees) additionally check the role themselves.
+ */
 export function isProtectedAdminPath(pathname: string): boolean {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
-  if (path === ADMIN_LOGIN_PATH) {
+  if (path === ADMIN_LOGIN_PATH || path === ADMIN_ACCEPT_INVITE_PATH) {
     return false;
   }
   return path === ADMIN_HOME_PATH || path.startsWith(`${ADMIN_HOME_PATH}/`);

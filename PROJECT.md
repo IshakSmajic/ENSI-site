@@ -285,7 +285,7 @@ read only their own row. Role changes happen through privileged server-side acce
    accounts. Employees enter the system only through the Owner-controlled invitation
    process, so no administrative access may depend on public self-registration.
 
-   Employee Invitation Flow (planned — Owner Employee Management milestone)
+   Employee Invitation Flow (implemented — Milestone 6; hosted verification pending)
    1. Owner signs into the administrative system.
    2. Owner opens employee management (/admin/employees).
    3. Owner enters the employee's email address.
@@ -298,11 +298,20 @@ read only their own row. Role changes happen through privileged server-side acce
    10. The employee can then sign in and use Employee administrative functionality.
    The Owner never chooses, knows, stores, or emails an employee's password.
    Passwords remain entirely under Supabase Auth.
+   Implementation (Milestone 6): step 6 is inviteUserByEmail followed by inserting the
+   employee role (the Auth user is deleted again if the insert fails). Steps 8–9 happen at
+   /admin/accept-invite?token_hash=..., linked from the custom invite email template
+   (supabase/templates/invite.html). The token is verified only when the password form
+   is submitted (verifyOtp type invite, then updateUser). Existing Auth accounts (Owner,
+   Employee, or without a role) are refused rather than given a role.
+   Revocation: delete the employee role row (access ends immediately), then hard-delete
+   the Auth user, which revokes their sessions and refresh tokens.
 
    Privileged Supabase Operations
    Inviting/creating users requires a privileged Supabase credential (secret/service-role key).
    It is used only in server-side code, in a server-only environment variable (no
-   NEXT_PUBLIC_ prefix), introduced no earlier than the Owner Employee Management milestone.
+   NEXT_PUBLIC_ prefix): SUPABASE_SECRET_KEY, read only by src/lib/supabase/admin.ts
+   (server-only) and used only by Owner employee management (Milestone 6).
    It must NEVER be exposed through NEXT_PUBLIC_* variables, sent to the browser, included in
    client-side JavaScript, stored in public source code, or committed to Git.
    The Owner dashboard calls protected server-side application functionality; being an Owner
@@ -386,9 +395,11 @@ read only their own row. Role changes happen through privileged server-side acce
    Contact/location information.
 
 9. Administrative Routes
-   All routes except /admin/login require an Employee or Owner role.
+   All routes except /admin/login and /admin/accept-invite require an Employee or Owner role.
    /admin/login
    Employee/Owner authentication.
+   /admin/accept-invite
+   Public. Invited Employee sets their password (token verified on submit).
    /admin
    Administrative dashboard.
    /admin/products
@@ -413,8 +424,9 @@ read only their own row. Role changes happen through privileged server-side acce
    Anonymous visitors are redirected to /admin/login. A signed-in user without a staff
    role has that session signed out and is redirected to /admin/login?error=unauthorized.
    Staff visiting /admin/login are redirected to /admin.
-   The route through which an invited employee sets their password is defined in the
-   Owner Employee Management milestone.
+   /admin/employees (Milestone 6): the page and its Server Functions call the Owner check
+   (src/lib/employees/management.ts authorizeOwner) server-side. Employees get a denial
+   message and no data; privileged calls run only after the check.
 
 10. Implementation Milestones
 
@@ -582,7 +594,8 @@ Owner:
 /admin → dashboard
 
 Milestone 6 — Owner Employee Management
-Status: ⬜ NOT STARTED
+Status: 🟨 IMPLEMENTED (2026-09-28; unit + mock end-to-end tests pass; hosted configuration
+and hosted verification pending — README "Employee management")
 Goals:
 Allow the Owner to securely manage Employee access without directly using the Supabase dashboard.
 Tasks:
@@ -856,7 +869,7 @@ The public website is reachable through its production domain and the administra
     Milestone 3 — Database Schema: ✅ Complete
     Milestone 4 — Database Security / RLS: ✅ Complete (deployed and verified on hosted Supabase)
     Milestone 5 — Admin Authentication: ✅ Complete (hosted Owner verification passed)
-    Milestone 6 — Owner Employee Management: ⬜ Not Started
+    Milestone 6 — Owner Employee Management: 🟨 Implemented (hosted verification pending)
     Milestone 7 — Admin Product Management: ⬜ Not Started
     Milestone 8 — Image Storage: ⬜ Not Started
     Milestone 9 — Admin Event Management: ⬜ Not Started
@@ -1195,6 +1208,72 @@ The public website is reachable through its production domain and the administra
     Next milestone
     Milestone 6 — Owner Employee Management
 
+    2026-09-28 — Milestone 6 (implementation; hosted verification pending)
+    Completed
+    /admin/employees (Owner only): Employee list (email, role, invitation pending/active,
+    date added), "Add employee" (email only), "Remove access" with confirmation; pending
+    states, fixed safe messages. Dashboard link shown to the Owner only (convenience; the
+    page checks the role itself). Employees see a denial message and no data.
+    Owner gate: src/lib/employees/management.ts authorizeOwner() on the verified session +
+    own user_roles row, called first by listEmployees/inviteEmployee/removeEmployee; the
+    privileged directory is opened only afterwards. Form role values and user ids are
+    never trusted (ids are UUID-validated and re-checked).
+    Privileged access: SUPABASE_SECRET_KEY (server-only, sb_secret_ or legacy
+    service_role; validated) in src/lib/supabase/admin.ts (server-only, stateless client),
+    used only through src/lib/employees/. Normal data access unchanged (user-scoped + RLS).
+    Provisioning: refuse existing accounts (Owner, Employee, no-role) -> inviteUserByEmail
+    -> insert role 'employee' (hard-coded) -> on insert failure delete the Auth user.
+    Onboarding: custom invite template -> /admin/accept-invite?token_hash=... (public,
+    no-referrer); password validated (8–72 bytes, confirmed) before the token is spent;
+    verifyOtp(invite) + updateUser(password) + role check; failures sign the session out.
+    Revocation: delete the employee row (filtered role='employee'), then hard-delete the
+    Auth user (sessions/refresh tokens revoked); Owner/self/non-employee refused; if the
+    account deletion fails, access is still revoked and the Owner is told.
+    Files created
+    src/lib/supabase/admin.ts, src/lib/employees/{management.ts,supabase-directory.ts,directory.ts},
+    src/lib/auth/invite.ts, src/app/admin/(dashboard)/employees/{page.tsx,actions.ts,employee-forms.tsx},
+    src/app/admin/accept-invite/{page.tsx,actions.ts,accept-invite-form.tsx},
+    supabase/templates/invite.html, tests/employee-management.test.ts, tests/accept-invite.test.ts
+    Files modified
+    src/lib/auth/roles.ts (accept-invite public path, path constants), src/lib/supabase/env.ts
+    (export isPrivilegedKey), src/app/admin/(dashboard)/page.tsx (Owner link),
+    src/app/globals.css (list style), supabase/config.toml (local invite template),
+    tests/auth-roles.test.ts, .env.example, README.md, PROJECT.md
+    Database changes
+    None. No migration, no RLS/grant change (service_role grants from Milestone 4 suffice).
+    Hosted database untouched; owner row untouched; no accounts created.
+    Tests performed
+    npm test 55/55; npm run lint, npm run typecheck, npm run build: pass.
+    Mock end-to-end (outside the repo): production build driven over HTTP by submitting the
+    real rendered forms, against a local mock of Supabase Auth + PostgREST user_roles
+    (own-row RLS, no role writes without the secret key, FK cascade, single-owner index,
+    one-time invite tokens): 61/61 passed. Anonymous: page and actions redirect to login,
+    no privileged calls. No-role: redirect with error=unauthorized, no privileged calls.
+    Employee: /admin works, no employee link, /admin/employees denied without data,
+    invite/remove/"create owner" POSTs denied with zero privileged calls, no users created.
+    Owner: list excludes Owner and no-role accounts; invite normalizes email, creates the
+    user and exactly the employee role (a forged role=owner field is ignored), still one
+    owner; duplicate, owner-email, existing no-role and invalid emails refused; self,
+    malformed-id and non-employee removals refused. Accept invite: page public and does not
+    spend the token, no-referrer, mismatch refused without spending, success redirects to
+    /admin as Employee with a session, new Employee denied /admin/employees, token single
+    use, malformed token refused. Removal: role deleted before the Auth user, removed
+    Employee's existing cookie redirected to login. Invitation revoked before acceptance
+    cannot be accepted. Secret value, variable name and admin API code absent from
+    .next/static and server output; / and /admin/login still 200.
+    Known issues
+    Hosted not yet configured: SUPABASE_SECRET_KEY not in .env.local; invite email template
+    and Site URL must be set in the Dashboard (README "Employee management").
+    Hosted Employee invite/accept/remove not run (would create a real account and send a
+    real email; needs the Owner's permission).
+    If saving the password fails after the token was verified, the link is spent; the Owner
+    removes and re-invites the Employee (rare: the password is validated first).
+    The built-in Supabase email sender is rate-limited; custom SMTP is a Milestone 18 task.
+    Employee list reads each Employee with getUserById; the existing-email check pages
+    through listUsers (fine for a small staff; fails closed past 50,000 users).
+    Next milestone
+    Milestone 6 hosted verification, then Milestone 7 — Admin Product Management
+
 13. AI Development Workflow
     Claude will perform most implementation work.
     Claude should NOT be given unrestricted instructions such as:
@@ -1268,7 +1347,10 @@ The report should be saved/copied into the development workflow so another devel
     hosted public sign-up is disabled; the Owner is bootstrapped (one owner, no employees).
     Owner sign-in, session persistence and logout verified on the hosted project
     (2026-09-28). Requires Node ^22.18.0 || >=23.6.0.
+    Milestone 6 implemented: /admin/employees (Owner only; list, invite, remove) and
+    /admin/accept-invite, using the server-only SUPABASE_SECRET_KEY. Unit and mock
+    end-to-end tests pass; hosted configuration and verification pending.
     Next action:
-    Milestone 6: Owner employee management (/admin/employees,
-    invitation acceptance page, server-only privileged key; use requireStaff() and
-    check role === "owner").
+    Milestone 6 hosted setup and verification (README "Employee management": secret key in
+    .env.local, invite template, Site URL, then the manual Owner/Employee check with the
+    Owner's permission). Then Milestone 7.

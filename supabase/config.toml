@@ -245,10 +245,11 @@ otp_expiry = 3600
 # admin_email = "admin@email.com"
 # sender_name = "Admin"
 
-# Uncomment to customize email template
-# [auth.email.template.invite]
-# subject = "You have been invited"
-# content_path = "./supabase/templates/invite.html"
+# Employee invitations link to /admin/accept-invite?token_hash=... (README, "Employee
+# invitations"). The hosted project needs the same template set in the Dashboard.
+[auth.email.template.invite]
+subject = "You have been invited to the Plant Pharmacy admin"
+content_path = "./supabase/templates/invite.html"
 
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]

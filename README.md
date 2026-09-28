@@ -14,8 +14,10 @@ page. The `products`, `events` and `user_roles` tables with Row Level Security a
 to the hosted Supabase project and verified there (2026-09-28). Staff can sign in at
 `/admin/login` and reach a minimal `/admin` dashboard (see [Admin authentication](#admin-authentication));
 the Owner sign-in flow has been verified against the hosted project (2026-09-28).
-Product/event management, employee management and the visual design are not
-implemented yet.
+Milestone 6 (Owner employee management, `/admin/employees`) is implemented and tested
+locally against a mock Supabase; its hosted verification is still pending (see
+[Employee management](#employee-management-owner-only)). Product/event management and the
+visual design are not implemented yet.
 
 ## Access model
 
@@ -29,10 +31,8 @@ Three access levels (full detail in [PROJECT.md](PROJECT.md) sections 5 and 7):
 
 Signing in is not enough to get admin access: a user also needs an `owner` or `employee`
 role in an application authorization record. There is no public sign-up. The Owner invites
-each Employee through Supabase, and the Employee then sets their own password. Any
-privileged Supabase key used for invitations stays in server-side code only. The database
-side (roles and RLS) and staff login are implemented; employee management comes in
-Milestone 6.
+each Employee through Supabase, and the Employee then sets their own password. The
+privileged Supabase key used for invitations stays in server-side code only.
 
 ## Technology foundation
 
@@ -69,12 +69,21 @@ cp .env.example .env.local
 | -------------------------------------- | -------------------------------------------------------- |
 | `NEXT_PUBLIC_SUPABASE_URL`             | Project Settings → Data API → Project URL                |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Project Settings → API Keys → Publishable key (`sb_publishable_...`); the legacy `anon` key also works |
+| `SUPABASE_SECRET_KEY` (server-only)    | Project Settings → API Keys → Secret keys (`sb_secret_...`); the legacy `service_role` key also works |
 
-Both values are public by design. Never put the secret key (`sb_secret_...`) or legacy
-`service_role` key in a `NEXT_PUBLIC_` variable; the app refuses to start if one is
-detected. The application does not currently use any privileged key.
+The two `NEXT_PUBLIC_` values are public by design. Never put the secret key
+(`sb_secret_...`) or legacy `service_role` key in a `NEXT_PUBLIC_` variable; the app
+refuses to start if one is detected.
 
-The app requires these variables: without them every request fails with a
+`SUPABASE_SECRET_KEY` is the only privileged credential. It has no `NEXT_PUBLIC_` prefix,
+so Next.js never ships it to the browser. It is read only by
+[src/lib/supabase/admin.ts](src/lib/supabase/admin.ts) (a `server-only` module) and used
+only by Owner employee management. Set it in `.env.local` locally and as a server-side
+environment variable in production. Never commit it. If it leaks, rotate it in the
+Dashboard. Without it, everything except `/admin/employees` works, and that page shows
+"Employee management is not configured on the server."
+
+The app requires the two public variables: without them every request fails with a
 "Missing Supabase environment variables" error.
 
 Verify the connection with:
@@ -145,8 +154,10 @@ Grants: `anon` has only `SELECT` on `products`/`events`. `authenticated` has `SE
 `INSERT`, `UPDATE`, `DELETE` on `products`/`events` (RLS lets writes through only for
 staff) and only `SELECT` on `user_roles`. Nobody but `service_role` has `TRUNCATE`
 (which ignores RLS) or any write privilege on `user_roles`, so roles cannot be changed
-through the Data API by anyone, the Owner included. Owner employee management
-(Milestone 6) will use the `service_role`/secret key in server-side code only.
+through the Data API by anyone, the Owner included. Owner employee management uses the
+secret key (`service_role`) in server-side code only, after checking the Owner role (see
+[Employee management](#employee-management-owner-only)). No migration or RLS change was
+needed for it.
 
 `private.is_staff()` is a `SECURITY INVOKER` function in the `private` schema, which is
 not exposed through the Data API (so it is not callable as RPC). It works because every
@@ -183,9 +194,7 @@ There is exactly one Owner. No identity is stored in migrations; the Owner is as
 once per environment by a deliberate manual step:
 
 1. Dashboard → Authentication → Users → Add user → **Create new user** with the Owner's
-   email; the Owner types their own password and "Auto Confirm User" is ticked. (Do not
-   use "Invite user" yet: the application has no page to accept an invitation and set a
-   password until Milestone 6.)
+   email; the Owner types their own password and "Auto Confirm User" is ticked.
 2. Run [scripts/bootstrap-owner.sql](scripts/bootstrap-owner.sql) with
    `REPLACE_WITH_OWNER_EMAIL` replaced by the Owner's email **outside the repository**
    (never commit it), either:
@@ -210,13 +219,11 @@ account in the application, and public sign-up stays disabled in Supabase (see
 **Provisioning accounts.** Accounts are created administratively, never by the public:
 the Owner was created in the Supabase Dashboard and given the `owner` role with
 [scripts/bootstrap-owner.sql](scripts/bootstrap-owner.sql) (see
-[Bootstrapping the Owner](#bootstrapping-the-owner)). Employees will be invited by the Owner
-from `/admin/employees` (Milestone 6). Until then, an Employee would need an Auth user
-created in the Dashboard plus a `user_roles` row with role `employee` inserted with SQL by a
-privileged database user; none exist today.
+[Bootstrapping the Owner](#bootstrapping-the-owner)). Employees are invited by the Owner
+from `/admin/employees` (see [Employee management](#employee-management-owner-only)).
 
 **Authorization.** A session alone is not enough. Every `/admin` route except
-`/admin/login` requires the signed-in user to have an `owner` or `employee` row in
+`/admin/login` and `/admin/accept-invite` requires the signed-in user to have an `owner` or `employee` row in
 `user_roles`. The role is read with the user's own session and the publishable key (the
 `user_roles_select_own` RLS policy lets users read only their own row); no privileged key
 is used and no RLS policy was changed.
@@ -276,6 +283,116 @@ logout, `/admin` protected afterwards). The Employee and no-role paths have not 
 against the hosted project, because no such accounts exist there. They are covered by the
 local end-to-end tests and the Milestone 4 RLS tests.
 
+## Employee management (Owner only)
+
+The Owner manages Employees at **`/admin/employees`**, linked from the dashboard for the
+Owner only. The page lists current Employees (email, "Employee", invitation
+pending/active, date added), has an "Add employee" form (email only) and a "Remove access"
+button per Employee, which asks for confirmation. There is no role editor: the page only
+ever grants or revokes the `employee` role. The Owner never appears in the list, and no
+Owner can be created, changed or removed here.
+
+**Who can use it.**
+
+| Caller                     | `/admin/employees` page                         | Invite / remove Server Functions |
+| -------------------------- | ----------------------------------------------- | -------------------------------- |
+| Anonymous                  | Redirect to `/admin/login` (proxy)              | Redirect to `/admin/login`; nothing runs |
+| Signed in, no role         | Signed out, `/admin/login?error=unauthorized`   | Same; nothing runs               |
+| Employee                   | "Only the owner can manage employees." No data  | Same message; no privileged call |
+| Owner                      | List and forms                                  | Allowed                          |
+
+**Architecture.**
+
+- [src/lib/employees/management.ts](src/lib/employees/management.ts) holds the rules:
+  `listEmployees`, `inviteEmployee` and `removeEmployee`. Each one starts with
+  `authorizeOwner()`, based on the caller's verified session and their own `user_roles`
+  row (`getAdminAccess()`). The privileged directory is opened only after that check
+  passes. Nothing the browser sends is trusted as authorization: any `role` form field is
+  ignored, and a submitted user id is only a reference that the server re-checks.
+- [src/lib/employees/supabase-directory.ts](src/lib/employees/supabase-directory.ts)
+  performs the privileged operations: the Auth Admin API (`inviteUserByEmail`,
+  `getUserById`, `listUsers`, `deleteUser`) and `user_roles` insert/delete with the secret
+  key. The role insert is hard-coded to `employee`, and the delete is filtered on
+  `role = 'employee'`, so it can never touch the Owner row. Only error codes are kept.
+  Raw Supabase/SQL messages and user metadata are never passed to the UI.
+- [src/lib/supabase/admin.ts](src/lib/supabase/admin.ts) creates the privileged client:
+  `server-only`, stateless (no session storage or refresh), and reading
+  `SUPABASE_SECRET_KEY`. Everything else still uses the user-scoped clients and RLS.
+- Server Functions:
+  [src/app/admin/(dashboard)/employees/actions.ts](src/app/admin/(dashboard)/employees/actions.ts).
+- No database migration and no RLS change. `service_role` already had the grants from the
+  Milestone 4 migration.
+
+**Provisioning (invitation).**
+
+1. The Owner enters an email. It is validated, trimmed and lower-cased.
+2. The server refuses the email if an Auth account already exists for it: the Owner's
+   email, an existing Employee, or an account without a role. Existing accounts are never
+   silently given the employee role.
+3. `inviteUserByEmail` creates the Auth user, and Supabase sends the invitation email.
+4. The server inserts `user_roles (user_id, 'employee')`.
+5. The invited Employee opens the link, which leads to **`/admin/accept-invite`**, and
+   chooses a password (8–72 characters, typed twice). Only on submit does the server
+   verify the one-time token (`verifyOtp` type `invite`, with the publishable key). It
+   then sets the password (`updateUser`), checks the role, and redirects to `/admin`.
+   Opening the link does not spend the token, so email link scanners cannot use it up.
+   The page sends no referrer.
+
+The Owner never sees, sets or stores the password. Public sign-up stays disabled:
+invitations work regardless.
+
+**Revocation.** "Remove access" works in this order:
+
+1. The server re-reads the target's role. It refuses the Owner, the caller themselves and
+   any non-employee.
+2. It deletes the `employee` row. From this point every admin request, Server Function
+   and RLS check denies the user.
+3. It **deletes the Auth user** (`deleteUser`, a hard delete). This removes their sessions
+   and refresh tokens and frees the email for a later re-invite.
+
+Access tokens they already hold stay cryptographically valid until they expire (1 hour or
+less), but they are useless: the role is gone and is re-checked on every request.
+
+**Partial failures.**
+
+| Failure | Result |
+| ------- | ------ |
+| Invite API fails (network, rate limit, duplicate) | Safe message; no role granted. Supabase rolls the user back if the email cannot be sent. |
+| Auth user created, role insert fails | The new Auth user is deleted again, which also invalidates the emailed link. If that cleanup fails too, an account without a role (no access) remains, and the Owner is told. |
+| Role deleted, Auth user deletion fails | Access is revoked anyway. The Owner is told to delete the account in the Dashboard. |
+| Role lookup/revoke fails | Nothing is deleted; the Owner may retry. |
+| Password save fails after the token was verified | The session is signed out. The link is spent, so the Owner removes and re-invites the Employee. |
+
+An Auth user without a `user_roles` row never has admin access, so every failure fails
+closed.
+
+**Required hosted configuration (not yet done on the hosted project).**
+
+1. Add `SUPABASE_SECRET_KEY` to `.env.local` (and later to the production environment).
+2. Dashboard → Authentication → Emails → **Invite user** template: replace the body with
+   [supabase/templates/invite.html](supabase/templates/invite.html). It links to
+   `{{ .SiteURL }}/admin/accept-invite?token_hash={{ .TokenHash }}`. The default template
+   uses a link the app cannot complete. The local stack picks the template up from
+   [supabase/config.toml](supabase/config.toml).
+3. Dashboard → Authentication → URL Configuration → **Site URL** must be the address the
+   app is served from (for example `http://localhost:3000` while testing locally, and the
+   production domain at deployment).
+4. Supabase's built-in email sender is heavily rate-limited and meant for testing. Set up
+   custom SMTP before real use (Milestone 18).
+
+**Manual hosted check (Owner; creates one real test Employee account).**
+
+1. Sign in as the Owner, open `/admin/employees` and add an email address you control.
+2. Open the email, set a password, and confirm you land on `/admin` as "Employee".
+3. As that Employee, open `/admin/employees` and confirm you see "Only the owner can manage
+   employees."
+4. As the Owner, remove the Employee, then confirm the Employee's session is sent to
+   `/admin/login` and that their sign-in now fails.
+
+**Tests.** `npm test` covers the Owner gate for every caller type, validation, duplicates,
+Owner protection, partial-failure compensation, the adapter's queries and the
+accept-invite flow. See PROJECT.md (development log) for the mock end-to-end run.
+
 ## Project structure
 
 ```
@@ -288,23 +405,34 @@ src/
     admin/
       actions.ts          logout Server Function
       login/              /admin/login: page, client form, login Server Function
+      accept-invite/      /admin/accept-invite: invited Employee sets their password (public)
       (dashboard)/        Protected admin routes: layout (requireStaff + header) and /admin page
+        employees/        /admin/employees (Owner only): page, client forms, Server Functions
   lib/
     auth/
       roles.ts    Admin authorization rules (role parsing, protected paths, role lookup, messages)
       staff.ts    Server-only data access layer: getAdminAccess(), requireStaff()
+      invite.ts   Invitation acceptance rules (token/password validation, acceptInvitation)
+    employees/
+      management.ts        Owner-only list/invite/remove rules (authorizeOwner first)
+      supabase-directory.ts  Privileged Auth Admin API + user_roles operations
+      directory.ts         Server-only: opens the directory with the secret-key client
     supabase/
       env.ts      Reads/validates the public Supabase env vars
       client.ts   Supabase client for Client Components (browser)
       server.ts   Supabase client for Server Components, Server Functions, Route Handlers (server-only)
+      admin.ts    Privileged secret-key client, server-only, employee management only
       proxy.ts    Session refresh + redirect helpers used by the proxy
   proxy.ts        Next.js proxy (formerly middleware): refreshes the session, guards /admin/*
 tests/
-  auth-roles.test.ts  Unit tests for src/lib/auth/roles.ts (npm test)
+  auth-roles.test.ts           Unit tests for src/lib/auth/roles.ts (npm test)
+  employee-management.test.ts  Owner gate, invite/remove rules, partial failures, adapter
+  accept-invite.test.ts        Invitation acceptance rules
 supabase/
-  config.toml   Supabase CLI configuration (local stack, seed paths; public sign-up disabled)
+  config.toml   Supabase CLI configuration (local stack, seed paths; public sign-up disabled; invite template)
   migrations/   Database schema migrations, applied in filename order
   seed.sql      Local development data (loaded by `supabase db reset` only)
+  templates/invite.html  Invitation email (links to /admin/accept-invite); copy into the hosted Dashboard
 scripts/
   check-supabase.mjs  Read-only connectivity check against the Supabase Auth health endpoint
   bootstrap-owner.sql One-time manual SQL to assign the initial Owner (run in the SQL Editor)

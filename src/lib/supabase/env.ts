@@ -29,7 +29,7 @@ export function getSupabaseEnv(): { url: string; publishableKey: string } {
 }
 
 // Detects new-style secret keys and legacy service_role JWTs.
-function isPrivilegedKey(key: string): boolean {
+export function isPrivilegedKey(key: string): boolean {
   if (key.startsWith("sb_secret_")) {
     return true;
   }
