@@ -8,9 +8,9 @@ See [PROJECT.md](PROJECT.md) for the full specification and milestone plan.
 
 ## Current state
 
-Milestones 1–7 (Project Foundation, Supabase Foundation, Database Schema, Database
-Security / RLS, Admin Authentication, Owner Employee Management, Admin Product Management)
-are complete. The public site is still a placeholder
+Milestones 1–8 (Project Foundation, Supabase Foundation, Database Schema, Database
+Security / RLS, Admin Authentication, Owner Employee Management, Admin Product Management,
+Image Storage) are complete. The public site is still a placeholder
 page. The `products`, `events` and `user_roles` tables with Row Level Security are applied
 to the hosted Supabase project and verified there (2026-09-28). Staff can sign in at
 `/admin/login` and reach a minimal `/admin` dashboard (see [Admin authentication](#admin-authentication));
@@ -22,12 +22,11 @@ lifecycle was verified there on 2026-09-30 (see
 (`/admin/products`, for the Owner and Employees) was verified on the hosted project with a
 real Employee account on 2026-09-30 (see [Product management](#product-management)).
 
-Milestone 8 (Image Storage) is **implemented but not yet deployed**: product images can be
-uploaded, replaced and removed on the product edit page, and are cleaned up when a
-product is deleted (see [Image storage](#image-storage)). Its migration
-(`20260930120000_add_image_storage.sql`) has not been applied to the hosted project yet,
-so the hosted app needs that step before image upload works there. Event management, the
-public catalogue and the visual design are not implemented yet.
+Milestone 8 (Image Storage) is complete: product images can be uploaded, replaced and
+removed on the product edit page, and are cleaned up when a product is deleted (see
+[Image storage](#image-storage)). Its migration (`20260930120000_add_image_storage.sql`)
+is applied to the hosted project, and the image upload check passed there on 2026-09-30.
+Event management, the public catalogue and the visual design are not implemented yet.
 
 ## Access model
 
@@ -536,7 +535,8 @@ creates both buckets (public, 5 MiB, JPEG/PNG/WebP), the Storage policies, and r
 `image_url` to `image_path`. No new environment variables. Locally, `npx supabase db reset`
 (Docker) applies it.
 
-**Deploying the migration (hosted; not done yet).** Needs the project owner's go-ahead:
+**Deploying the migration.** Done for the current hosted project (listed in the remote
+migration history on 2026-09-30); repeat for any new environment:
 
 1. `npx supabase db push --dry-run` and confirm that only
    `20260930120000_add_image_storage.sql` is pending.
@@ -563,6 +563,9 @@ creates both buckets (public, 5 MiB, JPEG/PNG/WebP), the Storage policies, and r
 7. Optional (anonymous write check): with only the publishable key,
    `curl -X POST "$URL/storage/v1/object/product-images/<product id>/00000000-0000-4000-8000-000000000000.png" -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: image/png" --data-binary @photo.png`
    must be refused (HTTP 400/403, "row-level security").
+
+The image upload test passed on the hosted project on 2026-09-30, run by the project
+owner and reported as a whole (the individual steps above were not reported separately).
 
 ## Project structure
 

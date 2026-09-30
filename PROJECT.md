@@ -823,8 +823,8 @@ Feedback: fixed messages only. Create/edit redirect to /admin/products?notice=cr
 No migration, no RLS or grant change.
 
 Milestone 8 — Image Storage
-Status: 🟡 IMPLEMENTED — hosted verification pending (2026-09-30). The migration has not
-been applied to the hosted project; see "Implementation" below and the development log.
+Status: ✅ COMPLETE (implemented 2026-09-30; migration applied to the hosted project and
+hosted image upload test passed 2026-09-30, see development log)
 Goals:
 Support product and promotional imagery.
 Tasks:
@@ -852,8 +852,7 @@ Promotion images: bucket and policies only; the UI comes with Milestone 9.
 Discrepancy with the completion criterion: there are no public product/promotion pages
 yet (Milestones 10/11). The criterion is met for this milestone when an uploaded image is
 reachable at its public URL and shown in the admin; public pages will render the same URL.
-To complete: apply the migration to the hosted project and run the README "Image storage"
-manual hosted check.
+Hosted: migration applied and the image upload test passed (2026-09-30).
 
 Milestone 9 — Admin Event/Promotion Management
 Status: ⬜ NOT STARTED
@@ -1072,7 +1071,7 @@ The public website is reachable through its production domain and the administra
     Milestone 5 — Admin Authentication: ✅ Complete (hosted Owner verification passed)
     Milestone 6 — Owner Employee Management: ✅ Complete (hosted lifecycle verified)
     Milestone 7 — Admin Product Management: ✅ Complete (hosted Employee verification passed)
-    Milestone 8 — Image Storage: 🟡 Implemented (hosted migration + verification pending)
+    Milestone 8 — Image Storage: ✅ Complete (hosted migration applied, upload test passed)
     Milestone 9 — Admin Event Management: ⬜ Not Started
     Milestone 10 — Public Product Catalog: ⬜ Not Started
     Milestone 11 — Public Promotion System: ⬜ Not Started
@@ -1706,6 +1705,41 @@ The public website is reachable through its production domain and the administra
     Next milestone
     Milestone 8 hosted migration and verification, then Milestone 9 — Admin
     Event/Promotion Management
+    (Hosted migration and verification done: see the next entry.)
+
+    2026-09-30 — Milestone 8 hosted deployment & verification
+    Completed
+    Migration 20260930120000_add_image_storage applied to the hosted project by the project
+    owner. Confirmed read-only with `npx supabase migration list --linked`: local and remote
+    history both list 20260928084238, 20260928090452 and 20260930120000.
+    Hosted image upload test (real hosted project, run manually by the project owner
+    through the application; README "Image storage", manual hosted check): reported as
+    passing ("it all worked").
+    All Milestone 8 completion criteria that can be checked before the public pages exist
+    are met; status set to COMPLETE.
+    Files created
+    None
+    Files modified
+    PROJECT.md, README.md (hosted state, completion status)
+    Database changes
+    Hosted: migration 20260930120000 applied (image_url -> image_path, CHECK constraints,
+    product-images/promotion-images buckets, four storage.objects policies).
+    Tests performed
+    Hosted image upload test by the project owner: pass. Remote migration history checked.
+    Known issues
+    The hosted test was reported as a whole, not step by step against the README
+    checklist. Which role ran it, and whether replacement, the refusal of invalid/oversized
+    files, removal, product-deletion cleanup and the anonymous curl upload were each run,
+    was not reported. These cases are covered by the unit tests and the database (PGlite)
+    policy tests.
+    "Appears on the corresponding public content" can only be checked through the public
+    URL until the public pages exist (Milestones 10/11).
+    Earlier limitations remain: signature-only validation (no decode), EXIF metadata kept,
+    no resizing/optimization; request bodies over 6 MB get Next's generic error page;
+    orphaned files only after two consecutive failures (logged, swept on product deletion);
+    removed images may stay cached for up to a day.
+    Next milestone
+    Milestone 9 — Admin Event/Promotion Management
 
 13. AI Development Workflow
     Claude will perform most implementation work.
@@ -1769,9 +1803,9 @@ The report should be saved/copied into the development workflow so another devel
 
 16. Current State
     Current milestone:
-    Milestone 8 — Image Storage (implemented; hosted migration and verification pending)
+    Milestone 9 — Admin Event/Promotion Management (not started)
     Project status:
-    Milestones 1–7 complete. Staff sign in at /admin/login. /admin and every child route
+    Milestones 1–8 complete. Staff sign in at /admin/login. /admin and every child route
     require an owner/employee user_roles row, checked in the proxy and by requireStaff().
     Logout is in the admin header. Earlier milestones: Application connects to Supabase (browser/server clients,
     proxy session refresh, env configuration verified). products, events and user_roles
@@ -1794,10 +1828,8 @@ The report should be saved/copied into the development workflow so another devel
     with staff-only write policies, products/events.image_path (object path, own-folder
     CHECK), product image upload/replace/remove on the edit page, list thumbnails, image
     cleanup on product deletion. Unit and database (PGlite) tests pass. Migration
-    20260930120000_add_image_storage.sql is NOT yet applied to the hosted project.
+    20260930120000_add_image_storage.sql is applied to the hosted project, and the hosted
+    image upload test passed (2026-09-30). Milestone 8 complete.
     Next action:
-    With authorization: apply the Milestone 8 migration to the hosted project
-    (npx supabase db push, dry run first), then run the README "Image storage" manual hosted
-    check as an Employee (and optionally the Owner). Then mark Milestone 8 complete and
-    start Milestone 9 — Admin Event/Promotion Management (reusing src/lib/images/ for
-    promotion images).
+    Milestone 9 — Admin Event/Promotion Management (reuse src/lib/images/ and the
+    promotion-images bucket for promotional images).
