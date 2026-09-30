@@ -285,7 +285,7 @@ read only their own row. Role changes happen through privileged server-side acce
    accounts. Employees enter the system only through the Owner-controlled invitation
    process, so no administrative access may depend on public self-registration.
 
-   Employee Invitation Flow (implemented — Milestone 6; hosted verification pending)
+   Employee Invitation Flow (implemented — Milestone 6; verified on the hosted project)
    1. Owner signs into the administrative system.
    2. Owner opens employee management (/admin/employees).
    3. Owner enters the employee's email address.
@@ -306,6 +306,8 @@ read only their own row. Role changes happen through privileged server-side acce
    Employee, or without a role) are refused rather than given a role.
    Revocation: delete the employee role row (access ends immediately), then hard-delete
    the Auth user, which revokes their sessions and refresh tokens.
+   Hosted: invitation emails go through the project's custom SMTP provider, using the
+   repository's invite template (see the Milestone 6 hosted verification log entry).
 
    Privileged Supabase Operations
    Inviting/creating users requires a privileged Supabase credential (secret/service-role key).
@@ -594,8 +596,8 @@ Owner:
 /admin → dashboard
 
 Milestone 6 — Owner Employee Management
-Status: 🟨 IMPLEMENTED (2026-09-28; unit + mock end-to-end tests pass; hosted configuration
-and hosted verification pending — README "Employee management")
+Status: ✅ COMPLETE (implemented 2026-09-28; hosted Owner/Employee lifecycle verified
+2026-09-30 with custom SMTP, see development log)
 Goals:
 Allow the Owner to securely manage Employee access without directly using the Supabase dashboard.
 Tasks:
@@ -849,7 +851,8 @@ Select hosting environment.
 Configure production environment variables.
 Configure production Supabase settings.
 Configure authentication URLs (including invitation redirect URLs).
-Configure invitation email template/SMTP if required.
+Configure invitation email template/SMTP (done on the current hosted project in
+Milestone 6; repeat for any new environment).
 Disable public sign-up.
 Store the privileged Supabase key only as a server-side environment variable.
 Bootstrap the initial Owner account.
@@ -869,7 +872,7 @@ The public website is reachable through its production domain and the administra
     Milestone 3 — Database Schema: ✅ Complete
     Milestone 4 — Database Security / RLS: ✅ Complete (deployed and verified on hosted Supabase)
     Milestone 5 — Admin Authentication: ✅ Complete (hosted Owner verification passed)
-    Milestone 6 — Owner Employee Management: 🟨 Implemented (hosted verification pending)
+    Milestone 6 — Owner Employee Management: ✅ Complete (hosted lifecycle verified)
     Milestone 7 — Admin Product Management: ⬜ Not Started
     Milestone 8 — Image Storage: ⬜ Not Started
     Milestone 9 — Admin Event Management: ⬜ Not Started
@@ -1273,6 +1276,52 @@ The public website is reachable through its production domain and the administra
     through listUsers (fine for a small staff; fails closed past 50,000 users).
     Next milestone
     Milestone 6 hosted verification, then Milestone 7 — Admin Product Management
+    (Hosted configuration and verification done: see the next entry.)
+
+    2026-09-30 — Milestone 6 hosted verification & completion
+    Completed
+    Hosted configuration (done by the Owner in the Supabase Dashboard / local env):
+    SUPABASE_SECRET_KEY set in the git-ignored .env.local; custom SMTP configured on the
+    hosted project; hosted "Invite user" template replaced with
+    supabase/templates/invite.html (links to /admin/accept-invite?token_hash=...).
+    No credentials, SMTP settings or tokens are recorded in the repository.
+    Hosted lifecycle verification (real hosted project, run manually by the Owner with a
+    test Employee address they control; README "Manual hosted check"):
+    Owner opens Employee Management (/admin/employees): PASS
+    Owner invites a new Employee: PASS
+    Real invitation email delivered through the custom SMTP provider: PASS
+    Invite link routes to the app's /admin/accept-invite flow: PASS
+    Invited Employee opens the invitation: PASS
+    Employee chooses and saves their own password: PASS
+    Employee signs in and reaches the permitted admin area: PASS
+    Owner removes the Employee: PASS
+    Removed Employee can no longer sign in or access the admin area: PASS
+    All Milestone 6 completion criteria are met; status set to COMPLETE.
+    Files created
+    None
+    Files modified
+    PROJECT.md, README.md (hosted state, SMTP now configured, completion status).
+    supabase/templates/invite.html has a pending formatting-only change (line wrapping; link
+    and text unchanged) made before this task; left as is.
+    Database changes
+    None. No migration, RLS or grant change. The test Employee's role row and Auth user
+    were removed by the verified revocation flow.
+    Tests performed
+    npm test 55/55 pass; npm run lint, npm run typecheck, npm run build: pass
+    git status/diff reviewed: no secret-bearing or generated files tracked or staged;
+    .env.local is ignored (.gitignore: .env* except .env.example)
+    Known issues
+    Step 3 of the manual check (a signed-in Employee opening /admin/employees sees the
+    Owner-only denial) was not separately reported for the hosted run; it is covered by
+    the unit tests and the mock end-to-end run.
+    If saving the password fails after the token was verified, the link is spent; the Owner
+    removes and re-invites the Employee (rare: the password is validated first).
+    Employee list reads each Employee with getUserById; the existing-email check pages
+    through listUsers (fine for a small staff; fails closed past 50,000 users).
+    At deployment the hosted Site URL must point to the production domain and the
+    secret key must be set as a production server-side variable (Milestone 18).
+    Next milestone
+    Milestone 7 — Admin Product Management
 
 13. AI Development Workflow
     Claude will perform most implementation work.
@@ -1336,9 +1385,9 @@ The report should be saved/copied into the development workflow so another devel
 
 16. Current State
     Current milestone:
-    Milestone 6 — Owner Employee Management
+    Milestone 7 — Admin Product Management (not started)
     Project status:
-    Milestones 1–5 complete. Staff sign in at /admin/login. /admin and every child route
+    Milestones 1–6 complete. Staff sign in at /admin/login. /admin and every child route
     require an owner/employee user_roles row, checked in the proxy and by requireStaff().
     Logout is in the admin header. Earlier milestones: Application connects to Supabase (browser/server clients,
     proxy session refresh, env configuration verified). products, events and user_roles
@@ -1347,10 +1396,10 @@ The report should be saved/copied into the development workflow so another devel
     hosted public sign-up is disabled; the Owner is bootstrapped (one owner, no employees).
     Owner sign-in, session persistence and logout verified on the hosted project
     (2026-09-28). Requires Node ^22.18.0 || >=23.6.0.
-    Milestone 6 implemented: /admin/employees (Owner only; list, invite, remove) and
-    /admin/accept-invite, using the server-only SUPABASE_SECRET_KEY. Unit and mock
-    end-to-end tests pass; hosted configuration and verification pending.
+    Milestone 6 complete: /admin/employees (Owner only; list, invite, remove) and
+    /admin/accept-invite, using the server-only SUPABASE_SECRET_KEY. Hosted project has
+    custom SMTP and the repository's invite template; the full Owner invite -> Employee
+    accept/password/sign-in -> Owner removal -> access lost lifecycle was verified on the
+    hosted project (2026-09-30); the test Employee was removed afterwards.
     Next action:
-    Milestone 6 hosted setup and verification (README "Employee management": secret key in
-    .env.local, invite template, Site URL, then the manual Owner/Employee check with the
-    Owner's permission). Then Milestone 7.
+    Milestone 7 — Admin Product Management.

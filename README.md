@@ -8,14 +8,15 @@ See [PROJECT.md](PROJECT.md) for the full specification and milestone plan.
 
 ## Current state
 
-Milestones 1–5 (Project Foundation, Supabase Foundation, Database Schema, Database
-Security / RLS, Admin Authentication) are complete. The public site is still a placeholder
+Milestones 1–6 (Project Foundation, Supabase Foundation, Database Schema, Database
+Security / RLS, Admin Authentication, Owner Employee Management) are complete. The public site is still a placeholder
 page. The `products`, `events` and `user_roles` tables with Row Level Security are applied
 to the hosted Supabase project and verified there (2026-09-28). Staff can sign in at
 `/admin/login` and reach a minimal `/admin` dashboard (see [Admin authentication](#admin-authentication));
 the Owner sign-in flow has been verified against the hosted project (2026-09-28).
-Milestone 6 (Owner employee management, `/admin/employees`) is implemented and tested
-locally against a mock Supabase; its hosted verification is still pending (see
+Owner employee management (`/admin/employees`) works on the hosted project, which sends
+invitation emails through custom SMTP. The full invite, accept, sign-in and removal
+lifecycle was verified there on 2026-09-30 (see
 [Employee management](#employee-management-owner-only)). Product/event management and the
 visual design are not implemented yet.
 
@@ -279,9 +280,10 @@ again. A wrong password shows "Invalid email or password.".
 
 This check passed for the real Owner account on the hosted project on 2026-09-28 (login,
 role shown as Owner, session kept across refresh and navigation, `/admin/login` redirect,
-logout, `/admin` protected afterwards). The Employee and no-role paths have not been run
-against the hosted project, because no such accounts exist there. They are covered by the
-local end-to-end tests and the Milestone 4 RLS tests.
+logout, `/admin` protected afterwards). Employee sign-in was verified on the hosted project
+on 2026-09-30 as part of the employee management check (below). The no-role path has not
+been run against the hosted project, because no such account exists there. It is covered
+by the local end-to-end tests and the Milestone 4 RLS tests.
 
 ## Employee management (Owner only)
 
@@ -366,7 +368,8 @@ less), but they are useless: the role is gone and is re-checked on every request
 An Auth user without a `user_roles` row never has admin access, so every failure fails
 closed.
 
-**Required hosted configuration (not yet done on the hosted project).**
+**Required hosted configuration (done on the current hosted project; repeat for every new
+environment).**
 
 1. Add `SUPABASE_SECRET_KEY` to `.env.local` (and later to the production environment).
 2. Dashboard → Authentication → Emails → **Invite user** template: replace the body with
@@ -377,8 +380,10 @@ closed.
 3. Dashboard → Authentication → URL Configuration → **Site URL** must be the address the
    app is served from (for example `http://localhost:3000` while testing locally, and the
    production domain at deployment).
-4. Supabase's built-in email sender is heavily rate-limited and meant for testing. Set up
-   custom SMTP before real use (Milestone 18).
+4. Dashboard → Authentication → Emails → **SMTP Settings**: configure a custom SMTP
+   provider. Supabase's built-in sender is heavily rate-limited and meant for testing
+   only. The SMTP credentials live only in the Supabase Dashboard, never in this
+   repository or in `.env.local`.
 
 **Manual hosted check (Owner; creates one real test Employee account).**
 
@@ -388,6 +393,12 @@ closed.
    employees."
 4. As the Owner, remove the Employee, then confirm the Employee's session is sent to
    `/admin/login` and that their sign-in now fails.
+
+This check passed on the hosted project on 2026-09-30, with the invitation delivered
+through custom SMTP: the Owner invited a test Employee, the email link opened
+`/admin/accept-invite`, the Employee set their own password, signed in and reached the
+admin area, and after the Owner removed them they could no longer sign in or reach the
+admin area.
 
 **Tests.** `npm test` covers the Owner gate for every caller type, validation, duplicates,
 Owner protection, partial-failure compensation, the adapter's queries and the
