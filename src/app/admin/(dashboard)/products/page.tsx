@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ADMIN_HOME_PATH, ADMIN_PRODUCTS_PATH } from "@/lib/auth/roles";
 import { requireStaff } from "@/lib/auth/staff";
 import { listProducts, productNotice } from "@/lib/products/management";
-import { openProductStore } from "@/lib/products/store";
+import { openProductStore, productImageUrl } from "@/lib/products/store";
 
 import { ProductList } from "./product-list";
 
@@ -26,7 +26,13 @@ export default async function ProductsPage({ searchParams }: PageProps<"/admin/p
       </p>
 
       {result.ok ? (
-        <ProductList products={result.products} notice={noticeText} />
+        <ProductList
+          products={result.products.map((product) => ({
+            ...product,
+            imageUrl: productImageUrl(product.imagePath),
+          }))}
+          notice={noticeText}
+        />
       ) : (
         <p role="alert" className="admin-error">
           {result.error}

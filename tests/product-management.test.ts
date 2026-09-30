@@ -1,8 +1,9 @@
 // Unit tests for staff product management (src/lib/products/). Run with `npm test`.
 //
 // An in-memory ProductStore stands in for Supabase (products table with the unique slug
-// constraint). It records every call so the tests can assert that callers without a staff
-// role never reach the store. No network, no real database.
+// constraint; tests/support/fakes.ts). It records every call so the tests can assert that
+// callers without a staff role never reach the store. No network, no real database.
+// Product image rules and image cleanup on delete are covered in product-images.test.ts.
 
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
@@ -22,14 +23,12 @@ import {
   slugify,
   updateProduct,
   type ProductAccess,
-  type ProductDetails,
-  type ProductFlag,
   type ProductInput,
-  type ProductStore,
   type RawProductFields,
-  type StoreResult,
 } from "../src/lib/products/management.ts";
 import { createSupabaseProductStore } from "../src/lib/products/supabase-store.ts";
+
+import { FakeImageStorage, FakeStore } from "./support/fakes.ts";
 
 const OWNER_ID = "00000000-0000-4000-8000-000000000001";
 const EMPLOYEE_ID = "00000000-0000-4000-8000-000000000002";
@@ -48,83 +47,6 @@ const nonStaff: [string, ProductAccess, string][] = [
   ["authenticated without a role", { status: "unauthorized" }, PRODUCT_MESSAGES.notStaff],
   ["role lookup failed", { status: "unavailable" }, PRODUCT_MESSAGES.unavailable],
 ];
-
-type Failure = { code?: string; status?: number };
-type Method = keyof ProductStore;
-
-class FakeStore implements ProductStore {
-  products = new Map<string, ProductDetails>();
-  calls: Method[] = [];
-  failures: Partial<Record<Method, Failure>> = {};
-  nextId = 100;
-
-  add(id: string, input: ProductInput) {
-    this.products.set(id, this.toDetails(id, input));
-  }
-
-  private toDetails(id: string, input: ProductInput): ProductDetails {
-    return {
-      id,
-      name: input.name,
-      slug: input.slug,
-      description: input.description,
-      category: input.category,
-      price: input.price === null ? null : Number(input.price),
-      isAvailable: input.isAvailable,
-      isFeatured: input.isFeatured,
-      updatedAt: "2026-09-30T00:00:00Z",
-    };
-  }
-
-  private slugTaken(slug: string, exceptId?: string) {
-    return [...this.products.values()].some((p) => p.slug === slug && p.id !== exceptId);
-  }
-
-  private run<T>(method: Method, body: () => StoreResult<T>): Promise<StoreResult<T>> {
-    this.calls.push(method);
-    const failure = this.failures[method];
-    return Promise.resolve(failure ? { ok: false, error: failure } : body());
-  }
-
-  list() {
-    return this.run("list", () => ({ ok: true, value: [...this.products.values()] }));
-  }
-  get(id: string) {
-    return this.run("get", () => ({ ok: true, value: this.products.get(id) ?? null }));
-  }
-  insert(input: ProductInput) {
-    return this.run<{ id: string }>("insert", () => {
-      if (this.slugTaken(input.slug)) return { ok: false, error: { code: "23505", status: 409 } };
-      const id = `20000000-0000-4000-8000-${String(this.nextId++).padStart(12, "0")}`;
-      this.add(id, input);
-      return { ok: true, value: { id } };
-    });
-  }
-  update(id: string, input: ProductInput) {
-    return this.run<boolean>("update", () => {
-      if (!this.products.has(id)) return { ok: true, value: false };
-      if (this.slugTaken(input.slug, id)) return { ok: false, error: { code: "23505", status: 409 } };
-      this.add(id, input);
-      return { ok: true, value: true };
-    });
-  }
-  setFlag(id: string, flag: ProductFlag, value: boolean) {
-    return this.run("setFlag", () => {
-      const product = this.products.get(id);
-      if (!product) return { ok: true, value: null };
-      if (flag === "is_available") product.isAvailable = value;
-      else product.isFeatured = value;
-      return { ok: true, value: { name: product.name } };
-    });
-  }
-  remove(id: string) {
-    return this.run("remove", () => {
-      const product = this.products.get(id);
-      this.products.delete(id);
-      return { ok: true, value: product ? { name: product.name } : null };
-    });
-  }
-}
 
 const TEA: ProductInput = {
   name: "Chamomile Tea",
@@ -151,9 +73,11 @@ function form(overrides: RawProductFields = {}): RawProductFields {
 }
 
 let store: FakeStore;
+let images: FakeImageStorage;
 
 beforeEach(() => {
   store = new FakeStore();
+  images = new FakeImageStorage();
   store.add(TEA_ID, TEA);
   store.add(BALM_ID, BALM);
 });
@@ -190,9 +114,10 @@ describe("callers without a staff role", () => {
         ok: false,
         error,
       });
-      assert.deepEqual(await deleteProduct(access, store, TEA_ID), { ok: false, error });
+      assert.deepEqual(await deleteProduct(access, store, images, TEA_ID), { ok: false, error });
 
       assert.deepEqual(store.calls, []);
+      assert.deepEqual(images.calls, []);
       assert.equal(store.products.size, 2);
       assert.equal(store.products.get(TEA_ID)?.name, "Chamomile Tea");
       assert.equal(store.products.get(TEA_ID)?.isAvailable, true);
@@ -219,7 +144,7 @@ describe("staff product management", () => {
       assert.equal((await setProductFlag(access, store, id, "featured", "true")).ok, true);
       assert.equal(store.products.get(id)?.isFeatured, true);
 
-      assert.deepEqual(await deleteProduct(access, store, id), {
+      assert.deepEqual(await deleteProduct(access, store, images, id), {
         ok: true,
         message: "“Peppermint Oil 10 ml” was deleted.",
       });
@@ -296,6 +221,7 @@ describe("createProduct", () => {
       price: 6.5,
       isAvailable: false,
       isFeatured: true,
+      imagePath: null,
       updatedAt: "2026-09-30T00:00:00Z",
     });
   });
@@ -443,7 +369,7 @@ describe("setProductFlag", () => {
 
 describe("deleteProduct", () => {
   it("deletes only the named product", async () => {
-    assert.deepEqual(await deleteProduct(owner, store, BALM_ID), {
+    assert.deepEqual(await deleteProduct(owner, store, images, BALM_ID), {
       ok: true,
       message: "“Herbal Balm” was deleted.",
     });
@@ -451,12 +377,12 @@ describe("deleteProduct", () => {
   });
 
   it("refuses invalid and missing targets", async () => {
-    assert.deepEqual(await deleteProduct(owner, store, "*"), {
+    assert.deepEqual(await deleteProduct(owner, store, images, "*"), {
       ok: false,
       error: PRODUCT_MESSAGES.invalidProduct,
     });
     assert.deepEqual(store.calls, []);
-    assert.deepEqual(await deleteProduct(owner, store, MISSING_ID), {
+    assert.deepEqual(await deleteProduct(owner, store, images, MISSING_ID), {
       ok: false,
       error: PRODUCT_MESSAGES.notFound,
     });
@@ -465,12 +391,12 @@ describe("deleteProduct", () => {
 
   it("maps failures to fixed messages", async () => {
     store.failures.remove = { status: 401 };
-    assert.deepEqual(await deleteProduct(owner, store, TEA_ID), {
+    assert.deepEqual(await deleteProduct(owner, store, images, TEA_ID), {
       ok: false,
       error: PRODUCT_MESSAGES.notPermitted,
     });
     store.failures.remove = { code: "57014" };
-    assert.deepEqual(await deleteProduct(owner, store, TEA_ID), {
+    assert.deepEqual(await deleteProduct(owner, store, images, TEA_ID), {
       ok: false,
       error: PRODUCT_MESSAGES.deleteFailed,
     });
@@ -594,13 +520,13 @@ describe("createSupabaseProductStore", () => {
     price: 6.5,
     is_available: true,
     is_featured: false,
+    image_path: null,
     updated_at: "2026-09-30T00:00:00Z",
-    image_url: "https://example.com/x.png",
   };
 
   it("inserts only the whitelisted columns", async () => {
     // Even if extra properties sneak into the input object, they are not written.
-    const parsed = parseProductForm({ ...form(), id: MISSING_ID, image_url: "x", created_at: "1999" } as RawProductFields);
+    const parsed = parseProductForm({ ...form(), id: MISSING_ID, image_path: "x", created_at: "1999" } as RawProductFields);
     assert.ok(parsed.ok);
     const { client, calls } = fakeClient({ data: { id: TEA_ID }, error: null });
     assert.deepEqual(await createSupabaseProductStore(client).insert(parsed.input), {
@@ -650,17 +576,17 @@ describe("createSupabaseProductStore", () => {
     ]);
   });
 
-  it("deletes by id only", async () => {
-    let fake = fakeClient({ data: [{ name: "Chamomile Tea" }], error: null });
+  it("deletes by id only and returns the stored image path", async () => {
+    let fake = fakeClient({ data: [{ name: "Chamomile Tea", image_path: null }], error: null });
     assert.deepEqual(await createSupabaseProductStore(fake.client).remove(TEA_ID), {
       ok: true,
-      value: { name: "Chamomile Tea" },
+      value: { name: "Chamomile Tea", imagePath: null },
     });
     assert.deepEqual(fake.calls, [
       ["from", "products"],
       ["delete"],
       ["eq", "id", TEA_ID],
-      ["select", "name"],
+      ["select", "name, image_path"],
     ]);
     fake = fakeClient({ data: [], error: null });
     assert.deepEqual(await createSupabaseProductStore(fake.client).remove(TEA_ID), { ok: true, value: null });
@@ -679,6 +605,7 @@ describe("createSupabaseProductStore", () => {
         price: 6.5,
         isAvailable: true,
         isFeatured: false,
+        imagePath: null,
         updatedAt: "2026-09-30T00:00:00Z",
       },
     });

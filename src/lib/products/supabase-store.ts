@@ -20,7 +20,8 @@ import type {
 
 type Client = Pick<SupabaseClient, "from">;
 
-const SUMMARY_COLUMNS = "id, name, slug, category, price, is_available, is_featured, updated_at";
+const SUMMARY_COLUMNS =
+  "id, name, slug, category, price, is_available, is_featured, image_path, updated_at";
 const DETAIL_COLUMNS = `${SUMMARY_COLUMNS}, description`;
 
 function ok<T>(value: T): StoreResult<T> {
@@ -59,6 +60,7 @@ function toSummary(row: Record<string, unknown>): ProductSummary {
     price: nullablePrice(row.price),
     isAvailable: row.is_available === true,
     isFeatured: row.is_featured === true,
+    imagePath: nullableText(row.image_path),
     updatedAt: String(row.updated_at),
   };
 }
@@ -67,8 +69,8 @@ function toDetails(row: Record<string, unknown>): ProductDetails {
   return { ...toSummary(row), description: nullableText(row.description) };
 }
 
-// The complete set of columns staff may write. id, image_url (Milestone 8) and the
-// timestamps are left to the database.
+// The complete set of columns the product form may write. id and the timestamps are left to
+// the database; image_path is written only by setImagePath (./images.ts).
 function toRow(input: ProductInput) {
   return {
     name: input.name,
@@ -145,13 +147,26 @@ export function createSupabaseProductStore(client: Client): ProductStore {
       return error ? fail(error) : ok(firstName(data));
     },
 
+    async setImagePath(id, path, expected) {
+      const query = client.from("products").update({ image_path: path }).eq("id", id);
+      const guarded = expected === null ? query.is("image_path", null) : query.eq("image_path", expected);
+      const { data, error } = await guarded.select("id");
+      return error ? fail(error) : ok(Array.isArray(data) && data.length > 0);
+    },
+
+    // Returns the deleted row's image path, so image cleanup uses database state rather
+    // than anything the browser sent.
     async remove(id) {
       const { data, error } = await client
         .from("products")
         .delete()
         .eq("id", id)
-        .select("name");
-      return error ? fail(error) : ok(firstName(data));
+        .select("name, image_path");
+      if (error) {
+        return fail(error);
+      }
+      const row = Array.isArray(data) ? (data[0] as Record<string, unknown> | undefined) : undefined;
+      return ok(row ? { name: String(row.name), imagePath: nullableText(row.image_path) } : null);
     },
   };
 }

@@ -7,8 +7,9 @@
 // products RLS policies (private.is_staff()) are a second, independent layer.
 //
 // Only the fields listed in PRODUCT_FIELDS are ever read from a form and written to the
-// database; id, image_url and the timestamps are never taken from the browser.
-// updated_at is maintained by the products_set_updated_at trigger.
+// database; id, image_path and the timestamps are never taken from the browser.
+// updated_at is maintained by the products_set_updated_at trigger. Images (image_path) are
+// managed by ./images.ts (Milestone 8).
 //
 // Messages returned to the browser are fixed strings; raw Supabase/PostgreSQL errors are
 // never passed through.
@@ -16,6 +17,7 @@
 // Kept free of Next.js and "@/" imports so it runs under `npm test`.
 
 import type { StaffRole } from "../auth/roles";
+import { removeOwnerImages, type ImageStorage } from "../images/storage.ts";
 
 /** Structural subset of AdminAccess (src/lib/auth/staff.ts). */
 export type ProductAccess =
@@ -47,6 +49,8 @@ export type ProductSummary = {
   price: number | null;
   isAvailable: boolean;
   isFeatured: boolean;
+  /** Object path in the product-images bucket, or null (no image). */
+  imagePath: string | null;
   updatedAt: string;
 };
 
@@ -63,8 +67,16 @@ export interface ProductStore {
   update(id: string, input: ProductInput): Promise<StoreResult<boolean>>;
   /** Returns the product's name, or null when no row with this id was updated. */
   setFlag(id: string, flag: ProductFlag, value: boolean): Promise<StoreResult<{ name: string } | null>>;
-  /** Returns the deleted product's name, or null when no row with this id was deleted. */
-  remove(id: string): Promise<StoreResult<{ name: string } | null>>;
+  /**
+   * Sets image_path only if it still equals `expected` (compare-and-set), so a concurrent
+   * change is detected instead of overwritten. Returns false when no row was updated.
+   */
+  setImagePath(id: string, path: string | null, expected: string | null): Promise<StoreResult<boolean>>;
+  /**
+   * Returns the deleted product's name and stored image path, or null when no row with this
+   * id was deleted.
+   */
+  remove(id: string): Promise<StoreResult<{ name: string; imagePath: string | null } | null>>;
 }
 
 export type ActionResult = { ok: true; message: string } | { ok: false; error: string };
@@ -290,7 +302,7 @@ export function parseProductForm(
   };
 }
 
-function isPermissionError(error: StoreError): boolean {
+export function isPermissionError(error: StoreError): boolean {
   return error.code === "42501" || error.status === 401 || error.status === 403;
 }
 
@@ -444,11 +456,16 @@ export async function setProductFlag(
 /**
  * Permanently deletes a product. There is no archive state in the schema (PROJECT.md
  * section 7): unavailable products stay public and are labelled, deleted ones are gone.
- * Image cleanup belongs to Milestone 8 (image_url is not managed here yet).
+ *
+ * The row is deleted first and its images afterwards. The image path comes from the deleted
+ * row itself (never from the form), and only objects in the product's own folder are
+ * removed. If the Storage cleanup fails, the product is still deleted (nothing references
+ * the file any more) and the message says so; the failure is logged.
  */
 export async function deleteProduct(
   access: ProductAccess,
   store: ProductStore,
+  images: ImageStorage,
   rawId: unknown,
 ): Promise<ActionResult> {
   const staff = authorizeStaff(access);
@@ -471,5 +488,11 @@ export async function deleteProduct(
   if (!result.value) {
     return { ok: false, error: PRODUCT_MESSAGES.notFound };
   }
-  return { ok: true, message: `“${result.value.name}” was deleted.` };
+  const cleaned = await removeOwnerImages(images, id, result.value.imagePath);
+  return {
+    ok: true,
+    message: cleaned
+      ? `“${result.value.name}” was deleted.`
+      : `“${result.value.name}” was deleted, but its image file could not be removed from storage.`,
+  };
 }

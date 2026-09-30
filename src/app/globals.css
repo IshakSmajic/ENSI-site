@@ -124,6 +124,21 @@ main {
   color: #b00020;
 }
 
+.admin-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.admin-image-section {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 2rem;
+}
+
 @media (prefers-color-scheme: dark) {
   .admin-error {
     color: #ff8a80;

@@ -20,8 +20,14 @@ invitation emails through custom SMTP. The full invite, accept, sign-in and remo
 lifecycle was verified there on 2026-09-30 (see
 [Employee management](#employee-management-owner-only)). Product management
 (`/admin/products`, for the Owner and Employees) was verified on the hosted project with a
-real Employee account on 2026-09-30 (see [Product management](#product-management)). Event management, image upload, the public
-catalogue and the visual design are not implemented yet.
+real Employee account on 2026-09-30 (see [Product management](#product-management)).
+
+Milestone 8 (Image Storage) is **implemented but not yet deployed**: product images can be
+uploaded, replaced and removed on the product edit page, and are cleaned up when a
+product is deleted (see [Image storage](#image-storage)). Its migration
+(`20260930120000_add_image_storage.sql`) has not been applied to the hosted project yet,
+so the hosted app needs that step before image upload works there. Event management, the
+public catalogue and the visual design are not implemented yet.
 
 ## Access model
 
@@ -122,8 +128,8 @@ not edit migrations that have already been applied.
 
 | Table      | Purpose                                                                 |
 | ---------- | ----------------------------------------------------------------------- |
-| `products` | Catalog entries. `slug` is unique lowercase kebab-case; `price` is optional and non-negative. |
-| `events`   | Promotions, announcements and events. Publicly visible when `is_active and starts_at <= now() and ends_at >= now()`. |
+| `products` | Catalog entries. `slug` is unique lowercase kebab-case; `price` is optional and non-negative; `image_path` is an optional Storage object path. |
+| `events`   | Promotions, announcements and events. Publicly visible when `is_active and starts_at <= now() and ends_at >= now()`. Optional `image_path`. |
 | `user_roles` | Application role (`owner` or `employee`) per staff member, keyed by `auth.users.id`. No credentials. At most one `owner`. |
 
 All tables have `created_at`/`updated_at`; a trigger keeps `updated_at` current on every
@@ -167,6 +173,11 @@ needed for it.
 not exposed through the Data API (so it is not callable as RPC). It works because every
 authenticated user may read their own `user_roles` row.
 
+**Storage** (Milestone 8) uses the same function. The `product-images` and
+`promotion-images` buckets are public (anyone can download an image by its URL), but only
+staff may upload, list or delete objects in them, and nobody may overwrite one. See
+[Image storage](#image-storage).
+
 ### Auth settings: no public sign-up
 
 Public sign-up is disabled in [supabase/config.toml](supabase/config.toml) (`[auth]` and
@@ -184,7 +195,8 @@ their own):
 
 1. Disable public sign-up on the hosted project (above).
 2. `npx supabase link --project-ref <project-ref>`, then `npx supabase db push`. Check the
-   list of pending migrations it prints includes both files before confirming.
+   list of pending migrations it prints includes every file in `supabase/migrations/`
+   before confirming.
 3. Verify in the Dashboard (Database → Tables) that RLS is enabled on `products`,
    `events` and `user_roles`, and that the Security Advisor reports no issues for them.
    The CLI applies the migrations one after another, so for a moment the Milestone 3
@@ -423,7 +435,10 @@ the dashboard.
   "Product saved.".
 - **Delete is permanent.** The schema has no archive state. To take a product off sale
   but keep it listed, mark it unavailable (unavailable products stay public and will be
-  labelled). Images are not handled yet (Milestone 8).
+  labelled). Deleting a product also deletes its image files (see
+  [Image storage](#image-storage)).
+- **Images** are added, replaced and removed on the edit page (see
+  [Image storage](#image-storage)).
 
 **Validation (server-side).** Name required (≤120 characters). Slug optional: leave it
 empty to generate it from the name (`Kamilica čaj` → `kamilica-caj`), or type lowercase
@@ -446,7 +461,7 @@ accepted. Empty optional fields are stored as `NULL`.
   The status toggles accept only `available`/`featured` with `true`/`false`.
 - Only the fields listed above are read from the form and written
   ([supabase-store.ts](src/lib/products/supabase-store.ts) names every column). `id`,
-  `image_url` and the timestamps can never be set from the browser. `updated_at` comes
+  `image_path` and the timestamps can never be set from the product form. `updated_at` comes
   from the existing database trigger.
 - Queries use the request's own session and the publishable key
   ([store.ts](src/lib/products/store.ts)), so the `products` RLS policies check the staff
@@ -476,6 +491,79 @@ generation and conflicts, invalid and unknown ids, the toggles, deletion, error 
 the adapter's queries and column whitelist. See PROJECT.md (development log) for the
 database (PGlite) and mock end-to-end runs.
 
+## Image storage
+
+Product images (and, from Milestone 9, promotion images) are stored in **Supabase
+Storage**. The database stores only the image's object path (`products.image_path`,
+`events.image_path`), never the file and never a full URL. Full design, including every
+partial-failure case: [PROJECT.md](PROJECT.md) section 6.
+
+| Bucket             | Used by                        | Read                 | Upload / delete  |
+| ------------------ | ------------------------------ | -------------------- | ---------------- |
+| `product-images`   | `products.image_path`          | public (by URL)      | Owner, Employee  |
+| `promotion-images` | `events.image_path` (UI in Milestone 9) | public (by URL) | Owner, Employee |
+
+- **Public by design.** These images are website content, so the buckets are public and
+  the app builds URLs as `<NEXT_PUBLIC_SUPABASE_URL>/storage/v1/object/public/<bucket>/<path>`.
+  Never put anything private in them. Anonymous visitors cannot list, upload, replace or
+  delete objects; neither can signed-in accounts without a staff role.
+- **Rules.** JPEG, PNG or WebP, at most **5 MB**. The server checks the file's content (its
+  signature), not its name or the type the browser claims, and refuses empty, missing,
+  oversized and other files with a fixed message.
+- **Paths.** `<product id>/<random uuid>.<jpg|png|webp>`, generated by the server. The
+  uploaded file name is never used. The database only accepts paths inside the row's own
+  folder, and Storage only accepts uploads into the folder of an existing product (or
+  event).
+- **Where.** `/admin/products/<id>/edit` has an **Image** section with a preview,
+  "Upload image"/"Replace image" and "Remove image". A new product gets its image after it
+  has been created (the new-product page says so). The product list shows thumbnails;
+  products without an image show "No image", and a missing file shows "Image unavailable".
+- **Replacement** uploads the new file first, then switches the product to it, then deletes
+  the old file, so the current image is never lost. **Deleting a product** deletes the row
+  first and then every file in its folder. If a file cannot be deleted, the action still
+  succeeds, says so, and logs `[images] <category>` with the path (no keys or tokens).
+- **Authorization** happens three times: the proxy/`requireStaff()`, the staff check in
+  [src/lib/products/images.ts](src/lib/products/images.ts), and Storage RLS
+  (`private.is_staff()`), because uploads and deletes run with the staff member's own
+  session. The secret key is not used for images.
+- **Body size.** Server Actions accept bodies up to 6 MB
+  ([next.config.ts](next.config.ts), default 1 MB) to fit a 5 MB image. The browser checks
+  the size before sending.
+
+**Setup.** Nothing to click in the Dashboard: the migration
+[20260930120000_add_image_storage.sql](supabase/migrations/20260930120000_add_image_storage.sql)
+creates both buckets (public, 5 MiB, JPEG/PNG/WebP), the Storage policies, and renames
+`image_url` to `image_path`. No new environment variables. Locally, `npx supabase db reset`
+(Docker) applies it.
+
+**Deploying the migration (hosted; not done yet).** Needs the project owner's go-ahead:
+
+1. `npx supabase db push --dry-run` and confirm that only
+   `20260930120000_add_image_storage.sql` is pending.
+2. `npx supabase db push`.
+3. Dashboard → Storage: both buckets exist, are public, have a 5 MB limit and allow
+   `image/jpeg`, `image/png`, `image/webp`. Storage → Policies: four policies on
+   `objects` (`image_objects_select_staff`, `product_images_insert_staff`,
+   `promotion_images_insert_staff`, `image_objects_delete_staff`), none for UPDATE.
+   Table Editor → `products`: the column is now `image_path`.
+
+**Manual hosted check (Employee or Owner; after deploying).**
+
+1. Open a product's **Edit** page and upload a JPEG under 5 MB. Confirm "Image saved.",
+   the preview, and the thumbnail on `/admin/products`.
+2. Open the image in a private window (right-click → open image). It must load without
+   signing in.
+3. Upload a PNG to replace it. Confirm the new image shows, and in Dashboard → Storage →
+   `product-images` → `<product id>/` only one file remains.
+4. Try a `.txt` file renamed to `.jpg` and a file over 5 MB. Both must be refused with a
+   message, and nothing must change.
+5. **Remove image**: the product shows "No image" and the folder is empty.
+6. Upload an image again, then **Delete** the product. Its folder must be gone from
+   Storage.
+7. Optional (anonymous write check): with only the publishable key,
+   `curl -X POST "$URL/storage/v1/object/product-images/<product id>/00000000-0000-4000-8000-000000000000.png" -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: image/png" --data-binary @photo.png`
+   must be refused (HTTP 400/403, "row-level security").
+
 ## Project structure
 
 ```
@@ -491,7 +579,7 @@ src/
       accept-invite/      /admin/accept-invite: invited Employee sets their password (public)
       (dashboard)/        Protected admin routes: layout (requireStaff + header) and /admin page
         employees/        /admin/employees (Owner only): page, client forms, Server Functions
-        products/         /admin/products (+ new/, [id]/edit/): list, shared form, Server Functions
+        products/         /admin/products (+ new/, [id]/edit/): list, shared form, image form, Server Functions
   lib/
     auth/
       roles.ts    Admin authorization rules (role parsing, protected paths, role lookup, messages)
@@ -503,8 +591,12 @@ src/
       directory.ts         Server-only: opens the directory with the secret-key client
     products/
       management.ts        Staff product rules (authorizeStaff first, validation, slugs)
+      images.ts            Staff product image rules (upload/replace/remove, safe ordering)
       supabase-store.ts    products queries with the user's session (RLS applies)
-      store.ts             Server-only: opens the store with the request's client
+      store.ts             Server-only: opens the store/image bucket with the request's client
+    images/
+      validation.ts        Image limits, content-signature check, object paths, public URLs
+      storage.ts           ImageStorage port + Supabase Storage adapter, cleanup helper
     supabase/
       env.ts      Reads/validates the public Supabase env vars
       client.ts   Supabase client for Client Components (browser)
@@ -517,9 +609,11 @@ tests/
   employee-management.test.ts  Owner gate, invite/remove rules, partial failures, adapter
   accept-invite.test.ts        Invitation acceptance rules
   product-management.test.ts   Staff gate, product validation/slugs, CRUD rules, adapter
+  product-images.test.ts       Image validation, paths, staff gate, replace/remove/delete cleanup, partial failures
+  support/fakes.ts             In-memory product store and Storage bucket used by the product tests
 supabase/
   config.toml   Supabase CLI configuration (local stack, seed paths; public sign-up disabled; invite template)
-  migrations/   Database schema migrations, applied in filename order
+  migrations/   Database schema migrations, applied in filename order (incl. Storage buckets/policies)
   seed.sql      Local development data (loaded by `supabase db reset` only)
   templates/invite.html  Invitation email (links to /admin/accept-invite); copy into the hosted Dashboard
 scripts/

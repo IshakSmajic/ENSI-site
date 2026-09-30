@@ -122,9 +122,10 @@ Admin Panel
    category
    TEXT
    Product category
-   image_url
+   image_path
    TEXT
-   Product image reference
+   Optional product image: object path in the product-images bucket (Milestone 8; was
+   image_url, renamed because it holds a path, not a URL; see section 6)
    price
    DECIMAL
    Optional displayed price
@@ -172,9 +173,10 @@ Event/promotion title
 description
 TEXT
 Description
-image_url
+image_path
 TEXT
-Promotional image
+Optional promotional image: object path in the promotion-images bucket (Milestone 8;
+was image_url; see section 6)
 event_type
 TEXT
 Promotion/event classification
@@ -256,7 +258,8 @@ read only their own row. Role changes happen through privileged server-side acce
    Can create and edit products, remove/archive products where supported, and change
    product availability and featured status.
    Can create and edit events/promotions and deactivate/remove them.
-   Will eventually manage product/promotional images through the admin interface.
+   Manages product images through the admin interface (Milestone 8); promotional images
+   will be managed the same way once event management exists (Milestone 9).
    Cannot create or remove other employees, change any user's role, promote themselves
    to Owner, or access Owner-only account-management functionality.
    3. Owner (authenticated, role = owner)
@@ -319,12 +322,146 @@ read only their own row. Role changes happen through privileged server-side acce
    The Owner dashboard calls protected server-side application functionality; being an Owner
    never causes privileged credentials to become available to the browser.
 
-6. Storage
-   Supabase Storage will store images.
-   Potential buckets:
-   product-images
-   promotion-images
-   Database records store references/URLs to these files rather than storing image binary data directly in PostgreSQL.
+6. Storage (implemented — Milestone 8)
+   Supabase Storage stores images. PostgreSQL stores only a reference, never binary data.
+   Migration: supabase/migrations/20260930120000_add_image_storage.sql.
+
+   Buckets (created by the migration, not by hand):
+   product-images     product photos (products.image_path)
+   promotion-images   promotion/event images (events.image_path); infrastructure only
+                      until Milestone 9 builds event management
+   Two buckets, because each maps to one table: uploads into product-images must target an
+   existing product's folder, uploads into promotion-images an existing event's folder.
+   Both: public = true, file_size_limit = 5 MiB, allowed_mime_types = image/jpeg,
+   image/png, image/webp.
+
+   Public read decision: product and promotion images are public website content (the
+   rows that reference them are public too), so both buckets are public. Anyone can
+   download an object through its public URL
+   (<SUPABASE_URL>/storage/v1/object/public/<bucket>/<path>); no signed URLs are needed,
+   and nothing private may ever be put in these buckets. Knowing a URL grants read access
+   only; every write is authorized by Storage RLS. Anonymous users cannot list objects.
+
+   What the database stores: the object path inside the bucket (image_path), not a full
+   URL and not a signed URL. URLs are built at render time from NEXT_PUBLIC_SUPABASE_URL
+   (src/lib/images/validation.ts publicImageUrl), so a project URL change does not
+   invalidate stored rows. NULL = no image; images are optional and existing rows stayed
+   valid (NULL).
+
+   Object-path convention: <row uuid>/<random uuid>.<ext>, ext in jpg | png | webp, e.g.
+   product-images/7c9e…/3f1a….webp. The server generates it (crypto.randomUUID()); the
+   uploaded file name is never used. The same rule is enforced three times: in the
+   application (isImageObjectPath / newImageObjectPath), in the Storage insert policies
+   (name pattern + existing product/event folder), and by CHECK constraints
+   products_image_path_format / events_image_path_format, which also require the path to
+   be in the row's own folder (<row id>/...). So a row can never reference another row's
+   object, and cleanup derived from a row stays inside that row's folder. No collisions
+   (random name per upload), no path traversal (fixed character set, no "..", no nested
+   folders), and all images of a product are under one folder, which makes cleanup simple.
+
+   Validation (server-side, src/lib/images/validation.ts; the file input's accept= and the
+   browser size check are convenience only):
+   - missing file / untouched input: refused ("Choose an image file to upload.")
+   - empty file: refused
+   - more than 5 MiB (5,242,880 bytes): refused before the content is read; the actual
+     byte count is checked again after reading (the declared size is not trusted)
+   - type: determined from the file signature (magic bytes): JPEG FF D8 FF, PNG 89 50 4E
+     47 0D 0A 1A 0A, WebP "RIFF"…"WEBP". Anything else (GIF, SVG, HEIC, AVIF, PDF,
+     executables, text) is refused whatever its name or declared type. A declared type
+     that disagrees with the content is refused too (an empty declared type is allowed;
+     "image/jpg" is treated as image/jpeg). The sniffed type is what is stored as the
+     object's content type.
+   Formats: JPEG, PNG, WebP. Not SVG (can carry scripts), not GIF (animation not needed),
+   not HEIC/AVIF (browser support / signature complexity; can be added later).
+   Maximum size: 5 MiB, enough for an ordinary product photo from a phone or camera and
+   well above what a web page needs. Enforced by the application, by the buckets'
+   file_size_limit, and indirectly by the Server Action body limit (next.config.ts
+   serverActions.bodySizeLimit = 6mb; the default is 1 MB; the extra MB is multipart
+   overhead). The body limit applies to every Server Action.
+   Limitation: the signature check does not decode the image, so a file that starts with a
+   valid image header but contains other data (a polyglot) is accepted. Impact is limited:
+   files are served from the Supabase Storage domain (not the application's origin) with
+   an image content type. No re-encoding is done, so EXIF metadata (for example GPS
+   location in phone photos) is kept; staff should upload photos without location data.
+   No image-processing dependency was added.
+
+   Authorization (storage.objects RLS; storage.objects already has RLS enabled by
+   Supabase; grants are unchanged):
+   anon                         public URL download only; no list, upload or delete
+   authenticated without role   nothing
+   employee / owner             select (list; also required by the Storage API for
+                                deletes), insert (convention + existing row folder),
+                                delete (both buckets)
+   nobody                       update (no UPDATE policy): objects are immutable, never
+                                overwritten or moved; a replacement is a new object
+   Policies: image_objects_select_staff, product_images_insert_staff,
+   promotion_images_insert_staff, image_objects_delete_staff, all TO authenticated and
+   using private.is_staff(), limited to the two buckets. The application uploads and
+   deletes with the staff member's own session (publishable key), so these policies are
+   enforced for every call. The secret key is not used for Storage.
+
+   Product image flow (Milestone 8): images are managed on /admin/products/[id]/edit, in an
+   "Image" section with its own form, separate from the product details form. Creating a
+   product does not upload an image: the product must exist first (the Storage insert
+   policy requires its folder id to be an existing product), which avoids a product/image
+   state that is half created. The new-product page says so.
+   Server Function changeProductImage (intent upload | remove) reads only the product id,
+   the intent and the file. Bucket, object path and the image being replaced are derived on
+   the server; the id is UUID-validated; the current image_path is read from the
+   database. Rules: src/lib/products/images.ts (authorizeStaff first).
+
+   Replacement (order chosen so the working image is never lost):
+   1. validate the file; read the product's current image_path from the database
+   2. upload the new object under a new name (upsert false: never overwrites)
+   3. update products.image_path with a compare-and-set on the previously read path
+   4. delete the old object
+   Removal: clear image_path (compare-and-set), then delete the object.
+
+   Product deletion: delete the row first (DELETE … RETURNING name, image_path), then
+   delete its images: the returned path plus anything else found in the product's folder
+   (leftovers of earlier failures). Targets are derived from the trusted product id and the
+   database row, never from the form, and only paths inside <product id>/ are deleted.
+   Row first, because a product must never reference a missing file; an orphaned file
+   (not referenced by anything) is the lesser failure.
+
+   Partial failures (fixed messages; details logged as "[images] <category>" with the
+   object path and the Storage status/code only; no tokens, keys or raw messages):
+   upload fails                      nothing changed; "Could not upload the image."
+                                     (403 -> "You are not allowed …") [upload_failed]
+   upload ok, DB update fails        the new object is deleted again; old image kept and
+                                     still shown; "Could not save the image."
+                                     [reference_update_failed]
+   … and that delete fails too       the new object is orphaned and logged
+                                     [orphaned_upload]; old image kept
+   product changed/deleted meanwhile compare-and-set updates nothing; new object deleted;
+                                     "The product was changed or deleted …"
+   DB ok, old-object delete fails    replacement succeeds; message says the previous file
+                                     could not be deleted; logged [old_image_cleanup_failed]
+   old object already missing        Storage reports no error; normal success
+   remove: file delete fails         reference cleared (image no longer shown); message
+                                     says so; logged
+   product delete: file delete fails product deleted; message says the image file could
+                                     not be removed; logged [owner_cleanup_failed]
+   product delete: folder list fails the stored image is still removed; logged
+   Orphaned files are unreferenced and harmless apart from storage use; delete them in the
+   Dashboard (Storage -> bucket -> <product id>/) when the log reports one, or they are
+   swept when the product is deleted.
+
+   Caching: objects are uploaded with Cache-Control max-age=86400 (1 day). Names never
+   repeat, so no stale image is ever shown after a replacement; a removed image may stay in
+   browser/CDN caches for up to a day.
+
+   Display: the admin list shows a 56 px thumbnail, the edit page a 240 px preview.
+   next/image with unoptimized (no remotePatterns, no image optimization). No image,
+   invalid path or a file that fails to load shows "No image" / "Image unavailable"; the
+   page never fails because of an image. The public catalogue (Milestone 10) will decide
+   on optimization.
+
+   Promotion images: the promotion-images bucket, its insert policy (existing event
+   folder), the shared select/delete policies and events.image_path with its constraint
+   exist and are tested at the database level. There is no upload UI: event management is
+   Milestone 9, which will reuse src/lib/images/ (validation, paths, ImageStorage with
+   IMAGE_BUCKETS.promotions, removeOwnerImages) and mirror src/lib/products/images.ts.
 
 7. Security Requirements
    The public website must have read-only access to information intended for visitors.
@@ -386,6 +523,12 @@ read only their own row. Role changes happen through privileged server-side acce
    exposed through the Data API), EXECUTE for authenticated only.
    Application roles are read from user_roles, never from JWT claims or user_metadata.
 
+   Enforcement (Milestone 8, Storage): product-images and promotion-images are public
+   buckets (public download by URL, no anonymous listing). Uploads and deletes on
+   storage.objects require private.is_staff(); nobody can update/overwrite objects. Upload
+   names must follow <existing row id>/<uuid>.<jpg|png|webp>. products/events image_path
+   CHECK constraints keep each reference inside its own row's folder. See section 6.
+
 8. Public Routes
    Planned routes:
    /
@@ -437,6 +580,10 @@ read only their own row. Role changes happen through privileged server-side acce
    src/lib/products/management.ts, which checks the staff role (authorizeStaff) before any
    query. Queries use the user-scoped client (publishable key + session), so the products
    RLS policies (private.is_staff()) enforce the role again in the database. No secret key.
+   Product images (Milestone 8): managed on /admin/products/[id]/edit (separate "Image"
+   form, Server Function changeProductImage). The rules in src/lib/products/images.ts call
+   authorizeStaff() first; uploads/deletes use the user-scoped client, so Storage RLS
+   (private.is_staff()) checks the role again. No secret key.
 
 10. Implementation Milestones
 
@@ -657,7 +804,7 @@ Authorization: Owner and Employee (not Owner-only). Three layers: proxy + requir
 pages; authorizeStaff() inside every rule (Server Functions are public POST endpoints);
 RLS in the database. The secret key is not used for products.
 Fields managed: name, slug, description, category, price, is_available, is_featured.
-image_url is untouched (Milestone 8). id and timestamps are never taken from the browser;
+image_url was untouched (managed as image_path since Milestone 8). id and timestamps are never taken from the browser;
 updated_at comes from the existing products_set_updated_at trigger.
 Validation (server-side; browser constraints are convenience only): name required (trimmed,
 whitespace collapsed, ≤120); slug optional (empty = generated from the name with diacritics
@@ -676,7 +823,8 @@ Feedback: fixed messages only. Create/edit redirect to /admin/products?notice=cr
 No migration, no RLS or grant change.
 
 Milestone 8 — Image Storage
-Status: ⬜ NOT STARTED
+Status: 🟡 IMPLEMENTED — hosted verification pending (2026-09-30). The migration has not
+been applied to the hosted project; see "Implementation" below and the development log.
 Goals:
 Support product and promotional imagery.
 Tasks:
@@ -692,6 +840,20 @@ Handle image replacement.
 Handle deleted/archived content appropriately.
 Completion criteria:
 An administrator can upload an image through the application and the image appears on the corresponding public content.
+Implementation (2026-09-30): see section 6 for the full design.
+Storage: public buckets product-images and promotion-images (5 MiB, JPEG/PNG/WebP),
+staff-only insert/select/delete policies on storage.objects via private.is_staff(), no
+update policy. Created by migration 20260930120000_add_image_storage.sql (also renames
+products/events image_url -> image_path and adds the path CHECK constraints).
+Product images: upload, replace and remove on the edit page; thumbnails in the list;
+image cleanup when a product is deleted. Server-side validation by file signature; paths
+generated by the server; replacement and deletion ordered for safe partial failure.
+Promotion images: bucket and policies only; the UI comes with Milestone 9.
+Discrepancy with the completion criterion: there are no public product/promotion pages
+yet (Milestones 10/11). The criterion is met for this milestone when an uploaded image is
+reachable at its public URL and shown in the admin; public pages will render the same URL.
+To complete: apply the migration to the hosted project and run the README "Image storage"
+manual hosted check.
 
 Milestone 9 — Admin Event/Promotion Management
 Status: ⬜ NOT STARTED
@@ -910,7 +1072,7 @@ The public website is reachable through its production domain and the administra
     Milestone 5 — Admin Authentication: ✅ Complete (hosted Owner verification passed)
     Milestone 6 — Owner Employee Management: ✅ Complete (hosted lifecycle verified)
     Milestone 7 — Admin Product Management: ✅ Complete (hosted Employee verification passed)
-    Milestone 8 — Image Storage: ⬜ Not Started
+    Milestone 8 — Image Storage: 🟡 Implemented (hosted migration + verification pending)
     Milestone 9 — Admin Event Management: ⬜ Not Started
     Milestone 10 — Public Product Catalog: ⬜ Not Started
     Milestone 11 — Public Promotion System: ⬜ Not Started
@@ -1461,6 +1623,90 @@ The public website is reachable through its production domain and the administra
     Next milestone
     Milestone 8 — Image Storage
 
+    2026-09-30 — Milestone 8 (implementation; hosted migration and verification pending)
+    Completed
+    Migration 20260930120000_add_image_storage: products/events image_url renamed to
+    image_path (object path, not URL); CHECK constraints products_image_path_format and
+    events_image_path_format (<row id>/<uuid>.<jpg|png|webp>, own folder only); public
+    buckets product-images and promotion-images (5 MiB, JPEG/PNG/WebP; upserted so the
+    settings are reproducible); storage.objects policies image_objects_select_staff,
+    product_images_insert_staff, promotion_images_insert_staff, image_objects_delete_staff
+    (TO authenticated, private.is_staff(), no UPDATE policy)
+    src/lib/images/: validation.ts (limits, signature sniffing, path generation/checks,
+    public URLs), storage.ts (ImageStorage port, Supabase adapter with the user-scoped
+    client, fixed bucket; removeOwnerImages; [images] issue log)
+    src/lib/products/images.ts: setProductImage (validate -> read current path -> upload new
+    -> compare-and-set -> delete old; compensation on failure) and removeProductImage
+    deleteProduct now takes an ImageStorage and removes the product's images after the row
+    ProductStore: setImagePath (compare-and-set), image_path in reads, remove returns it
+    Edit page "Image" section (preview, upload/replace, remove with confirmation); list
+    thumbnails; new-product page hint; next.config.ts serverActions.bodySizeLimit 6mb
+    Runtime relative imports in modules loaded by npm test carry the .ts extension
+    (tsconfig allowImportingTsExtensions was already on), because Node's type stripping
+    does not resolve extensionless specifiers; earlier tested modules had only type imports
+    Files created
+    supabase/migrations/20260930120000_add_image_storage.sql,
+    src/lib/images/{validation.ts,storage.ts}, src/lib/products/images.ts,
+    src/app/admin/(dashboard)/products/{product-image.tsx,product-image-form.tsx},
+    tests/product-images.test.ts, tests/support/fakes.ts
+    Files modified
+    src/lib/products/{management.ts,supabase-store.ts,store.ts},
+    src/app/admin/(dashboard)/products/{actions.ts,page.tsx,product-list.tsx},
+    src/app/admin/(dashboard)/products/new/page.tsx,
+    src/app/admin/(dashboard)/products/[id]/edit/page.tsx, src/app/globals.css,
+    next.config.ts, tests/product-management.test.ts (shared fakes, new deleteProduct
+    argument, image_path in expected shapes), README.md, PROJECT.md
+    Database changes
+    Migration above. NOT applied to the hosted project (needs authorization; see README
+    "Image storage", "Deploying the migration").
+    Tests performed
+    npm test 144/144 (45 new: validation of every accepted/refused type, missing/empty/
+    oversized/lying-size/unreadable files, path generation and strict recognition,
+    traversal and file-name independence, staff gate with zero store/storage calls for
+    anonymous/no-role/unavailable, Owner and Employee upload, replacement, removal,
+    deletion cleanup incl. folder sweep and other-folder safety, every partial failure in
+    section 6, Storage and product-store adapters). npm run lint, npm run typecheck,
+    npm run build: pass.
+    Database (outside the repo): all repo migrations + seed on PGlite 0.5.8 with a Supabase
+    emulation (anon/authenticated/service_role, auth.users, Supabase's auth.uid(),
+    permissive default privileges, storage.buckets/storage.objects shaped like Supabase's
+    with RLS and Supabase's grants); SQL as the Storage API runs it (SET ROLE +
+    request.jwt.claims): 86/86 passed. Columns renamed; seed rows keep NULL; buckets and
+    settings; exact policy set; constraints accept own-folder paths and reject other
+    folders, traversal, bad names/extensions, uppercase and full URLs; anon and no-role
+    upload/list/update/delete denied in both buckets; Employee and Owner upload (both
+    buckets), list, delete; uploads refused for unsafe names, traversal, SVG, double
+    extension, non-existent product, wrong bucket/folder type, missing folder, other
+    buckets; no overwrite/move (no UPDATE policy, duplicate insert fails); deleting a
+    missing object is not an error; delete row then image works; upload into a deleted
+    product's folder refused; revoked Employee denied; JWT role claims ignored;
+    Milestone 4/7 spot checks (anon writes, TRUNCATE, user_roles writes, no-role insert,
+    private.is_staff() not executable by anon); two fresh databases have identical
+    policy/bucket/constraint fingerprints; re-running the bucket upsert restores settings.
+    Mutation checks: removing private.is_staff() from the storage policies -> 7 failures;
+    removing the own-folder rule from the constraints -> 3 failures.
+    The database run found a real bug that the unit tests could not: an unqualified
+    "name" inside the products subquery of the insert policy resolved to products.name.
+    Fixed by qualifying objects.name before the migration was applied anywhere.
+    Production build started with placeholder env: / and /admin/login 200; product pages
+    redirect to /admin/login; no secret key material in .next/static.
+    Known issues
+    Hosted: migration not applied; buckets/policies not verified against the real Storage
+    API; no real upload performed (needs authorization and a staff session).
+    The Storage API itself is emulated in the database tests (its RLS behavior is what is
+    tested, not its HTTP layer, the bucket size/MIME enforcement or public URL serving).
+    Signature-only validation (no decode); EXIF metadata kept; no resizing/optimization.
+    A request body over 6 MB is refused by Next.js before the Server Function runs, which
+    shows the generic error page instead of the fixed message (the browser-side size check
+    prevents this in normal use).
+    Orphaned objects are possible only after two failures in a row; they are logged and
+    swept when the product is deleted.
+    No public pages yet, so the completion criterion "appears on the corresponding public
+    content" can only be checked through the public URL (Milestones 10/11).
+    Next milestone
+    Milestone 8 hosted migration and verification, then Milestone 9 — Admin
+    Event/Promotion Management
+
 13. AI Development Workflow
     Claude will perform most implementation work.
     Claude should NOT be given unrestricted instructions such as:
@@ -1523,7 +1769,7 @@ The report should be saved/copied into the development workflow so another devel
 
 16. Current State
     Current milestone:
-    Milestone 8 — Image Storage (not started)
+    Milestone 8 — Image Storage (implemented; hosted migration and verification pending)
     Project status:
     Milestones 1–7 complete. Staff sign in at /admin/login. /admin and every child route
     require an owner/employee user_roles row, checked in the proxy and by requireStaff().
@@ -1544,5 +1790,14 @@ The report should be saved/copied into the development workflow so another devel
     using the user-scoped client and the existing products RLS (no migration, no secret
     key). Unit, database (PGlite) and mock end-to-end checks pass, and product management
     was verified on the hosted project with a real Employee account (2026-09-30).
+    Milestone 8 implemented (2026-09-30): public product-images/promotion-images buckets
+    with staff-only write policies, products/events.image_path (object path, own-folder
+    CHECK), product image upload/replace/remove on the edit page, list thumbnails, image
+    cleanup on product deletion. Unit and database (PGlite) tests pass. Migration
+    20260930120000_add_image_storage.sql is NOT yet applied to the hosted project.
     Next action:
-    Milestone 8 — Image Storage.
+    With authorization: apply the Milestone 8 migration to the hosted project
+    (npx supabase db push, dry run first), then run the README "Image storage" manual hosted
+    check as an Employee (and optionally the Owner). Then mark Milestone 8 complete and
+    start Milestone 9 — Admin Event/Promotion Management (reusing src/lib/images/ for
+    promotion images).

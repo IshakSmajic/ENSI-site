@@ -14,6 +14,9 @@ export default async function NewProductPage() {
         <Link href={ADMIN_PRODUCTS_PATH}>← Products</Link>
       </p>
       <h1>Add product</h1>
+      <p className="admin-muted">
+        Save the product first; you can then add an image from its Edit page.
+      </p>
       <ProductForm />
     </main>
   );

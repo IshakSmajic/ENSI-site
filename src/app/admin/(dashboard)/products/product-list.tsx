@@ -7,6 +7,7 @@ import { ADMIN_PRODUCTS_PATH } from "@/lib/auth/roles";
 import type { ProductSummary } from "@/lib/products/management";
 
 import { changeProduct } from "./actions";
+import { ProductImage } from "./product-image";
 
 // One result state for the whole list: the message of the latest toggle/delete stays
 // visible above the table. A notice from a redirect (created/saved) shows until then.
@@ -14,7 +15,7 @@ export function ProductList({
   products,
   notice,
 }: {
-  products: ProductSummary[];
+  products: (ProductSummary & { imageUrl: string | null })[];
   notice: string | null;
 }) {
   const [state, formAction, pending] = useActionState(changeProduct, undefined);
@@ -36,6 +37,7 @@ export function ProductList({
           <table className="admin-table">
             <thead>
               <tr>
+                <th scope="col">Image</th>
                 <th scope="col">Product</th>
                 <th scope="col">Category</th>
                 <th scope="col">Price</th>
@@ -47,6 +49,9 @@ export function ProductList({
             <tbody>
               {products.map((product) => (
                 <tr key={product.id}>
+                  <td>
+                    <ProductImage src={product.imageUrl} alt="" size={56} />
+                  </td>
                   <td>
                     <strong>{product.name}</strong>
                     <div className="admin-muted">{product.slug}</div>
