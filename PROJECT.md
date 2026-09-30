@@ -354,6 +354,9 @@ read only their own row. Role changes happen through privileged server-side acce
    Products: read all product rows. is_available does not control visibility: unavailable
    products are shown as "currently unavailable". (If an archive flag is added later,
    archived rows will be excluded.)
+   Product removal (Milestone 7 decision): there is no archive flag. "Archive/remove" is a
+   permanent delete (products_delete_staff policy); "Mark unavailable" is the reversible way
+   to take a product out of stock while keeping it listed.
    Events: read only currently relevant events
    (is_active = true AND starts_at <= current time AND ends_at >= current time).
    Writes: none.
@@ -429,6 +432,11 @@ read only their own row. Role changes happen through privileged server-side acce
    /admin/employees (Milestone 6): the page and its Server Functions call the Owner check
    (src/lib/employees/management.ts authorizeOwner) server-side. Employees get a denial
    message and no data; privileged calls run only after the check.
+   /admin/products, /admin/products/new, /admin/products/[id]/edit (Milestone 7): Owner and
+   Employee. Pages call requireStaff(); every product Server Function calls
+   src/lib/products/management.ts, which checks the staff role (authorizeStaff) before any
+   query. Queries use the user-scoped client (publishable key + session), so the products
+   RLS policies (private.is_staff()) enforce the role again in the database. No secret key.
 
 10. Implementation Milestones
 
@@ -623,7 +631,8 @@ The Owner can revoke/deactivate Employee access.
 All privileged user-management operations occur server-side.
 
 Milestone 7 — Admin Product Management
-Status: ⬜ NOT STARTED
+Status: ✅ COMPLETE (implemented 2026-09-30; hosted verification with a real Employee
+account passed 2026-09-30, see development log)
 Goals:
 Implement complete product management.
 Tasks:
@@ -638,6 +647,33 @@ Generate/validate slugs.
 Display success/error feedback.
 Completion criteria:
 An Employee (or the Owner) can manage the complete product catalog without directly accessing Supabase.
+Implementation (2026-09-30):
+Architecture: same layering as Milestone 6. src/lib/products/management.ts holds the rules
+(authorizeStaff first, then input validation, then the ProductStore); supabase-store.ts is
+the adapter over the request's user-scoped Supabase client; store.ts (server-only) opens it.
+Server Functions in src/app/admin/(dashboard)/products/actions.ts are thin wrappers that
+pass getAdminAccess() and only the whitelisted form fields.
+Authorization: Owner and Employee (not Owner-only). Three layers: proxy + requireStaff() on
+pages; authorizeStaff() inside every rule (Server Functions are public POST endpoints);
+RLS in the database. The secret key is not used for products.
+Fields managed: name, slug, description, category, price, is_available, is_featured.
+image_url is untouched (Milestone 8). id and timestamps are never taken from the browser;
+updated_at comes from the existing products_set_updated_at trigger.
+Validation (server-side; browser constraints are convenience only): name required (trimmed,
+whitespace collapsed, ≤120); slug optional (empty = generated from the name with diacritics
+transliterated, e.g. "Kamilica čaj" -> kamilica-caj) or typed (lower-cased, must match the
+products_slug_format rule, ≤100); category optional (≤60); description optional (≤5000);
+price optional, 0–99999999.99 with at most 2 decimals, "." or "," accepted, stored as
+numeric; checkboxes true only when checked. Empty optional fields are stored as NULL.
+Slug uniqueness: enforced by products_slug_key; a 23505 is shown as a slug field error.
+Slugs are not auto-suffixed: the employee chooses another one.
+Status toggles set an explicit value (not "flip"), so double submissions are idempotent.
+Removal: permanent delete with a browser confirmation (no archive column exists; see
+section 7). Product ids are UUID-validated; update/delete/toggle report "does not exist"
+when no row was affected.
+Feedback: fixed messages only. Create/edit redirect to /admin/products?notice=created|updated
+(only these codes render); list actions show their result above the table.
+No migration, no RLS or grant change.
 
 Milestone 8 — Image Storage
 Status: ⬜ NOT STARTED
@@ -873,7 +909,7 @@ The public website is reachable through its production domain and the administra
     Milestone 4 — Database Security / RLS: ✅ Complete (deployed and verified on hosted Supabase)
     Milestone 5 — Admin Authentication: ✅ Complete (hosted Owner verification passed)
     Milestone 6 — Owner Employee Management: ✅ Complete (hosted lifecycle verified)
-    Milestone 7 — Admin Product Management: ⬜ Not Started
+    Milestone 7 — Admin Product Management: ✅ Complete (hosted Employee verification passed)
     Milestone 8 — Image Storage: ⬜ Not Started
     Milestone 9 — Admin Event Management: ⬜ Not Started
     Milestone 10 — Public Product Catalog: ⬜ Not Started
@@ -1323,6 +1359,108 @@ The public website is reachable through its production domain and the administra
     Next milestone
     Milestone 7 — Admin Product Management
 
+    2026-09-30 — Milestone 7 (implementation; hosted verification pending)
+    Completed
+    /admin/products (Owner + Employee): table of all products (name, slug, category, price,
+    availability, featured, updated), empty-catalogue and load-failure states, "Add product"
+    link, per-row Edit, Mark available/unavailable, Feature/Unfeature and Delete (with
+    confirmation). Result messages shown above the table.
+    /admin/products/new and /admin/products/[id]/edit: shared form (name, slug, category,
+    price, description, available, featured) with field-level errors that keep the
+    submitted values; invalid/unknown ids show "This product does not exist".
+    Dashboard links to product management for all staff.
+    Rules in src/lib/products/management.ts: authorizeStaff() before any store call;
+    parseProductForm() (normalization, limits, slug generation/validation, price parsing);
+    only PRODUCT_FIELDS are read from forms and only those columns written; database errors
+    reduced to code/status and mapped to fixed messages (23505 -> slug taken, 42501/401/403
+    -> not permitted).
+    Removal decision: hard delete (no archive column; section 7). No image handling (Milestone 8).
+    No public catalogue (Milestone 10).
+    Files created
+    src/lib/products/{management.ts,supabase-store.ts,store.ts},
+    src/app/admin/(dashboard)/products/{page.tsx,actions.ts,product-list.tsx,product-form.tsx},
+    src/app/admin/(dashboard)/products/new/page.tsx,
+    src/app/admin/(dashboard)/products/[id]/edit/page.tsx, tests/product-management.test.ts
+    Files modified
+    src/lib/auth/roles.ts (ADMIN_PRODUCTS_PATH), src/app/admin/(dashboard)/page.tsx (link),
+    src/app/globals.css (table/form helpers), README.md, PROJECT.md
+    Database changes
+    None. No migration, no RLS/grant change. Hosted database untouched.
+    Tests performed
+    npm test 99/99 (44 new: staff gate for every caller type with zero store calls for
+    non-staff, create/edit/toggle/delete for Owner and Employee, validation, slug generation
+    and conflicts, invalid/nonexistent ids, error mapping, adapter queries and column
+    whitelist). npm run lint, npm run typecheck, npm run build: pass.
+    Database (outside the repo): repo migrations + seed on PGlite (PostgreSQL in WASM) with
+    anon/authenticated roles, auth.uid() from request.jwt.claims and Supabase's permissive
+    default privileges; the SQL the adapter's PostgREST calls produce: 34/34 passed.
+    Anonymous insert/update/delete denied (42501) and reads allowed; no-role insert denied
+    (42501) and update/delete affect 0 rows (reported as "does not exist"); Employee and
+    Owner insert/update/flag/delete succeed; trigger bumps updated_at; duplicate slug on
+    insert and update -> 23505; negative price -> 23514; missing id -> 0 rows; TRUNCATE and
+    user_roles writes still denied; one owner row unchanged.
+    Mock end-to-end (outside the repo): production build driven over HTTP by submitting the
+    real rendered forms (no JavaScript) against a local mock of Supabase Auth + PostgREST
+    with emulated grants/RLS: 54/54 passed. Anonymous: product pages redirect to login;
+    replayed create/toggle/delete payloads redirect with zero writes. No-role session:
+    replayed POSTs -> login?error=unauthorized, zero writes; login refused. Employee: list,
+    create (slug generated, price normalized; forged id/image_url/created_at/role fields not
+    written), invalid values re-rendered with errors and kept values, duplicate typed and
+    generated slugs, edit page prefilled, invalid/nonexistent/tampered ids, update, slug
+    conflict, availability and featured toggles, tampered flag/value/intent refused, delete
+    and repeated delete, no raw database text in any response, still denied
+    /admin/employees. Owner: create/update/toggle/delete. Empty catalogue message. Logout
+    protects product pages. Unknown ?notice codes are not rendered.
+    Real build with the hosted env, anonymous only (read-only): / and /admin/login 200;
+    /admin/products, /new and /[id]/edit -> /admin/login. SUPABASE_SECRET_KEY value and
+    name absent from .next/static and .next/server.
+    Known issues
+    Hosted product CRUD not yet run by a real Owner/Employee (needs their passwords; see
+    README "Product management", "Manual hosted check"). (Resolved: passed as an Employee
+    on 2026-09-30, see the next entry.)
+    The list is not paginated; PostgREST's default max-rows (1000 on hosted projects) caps
+    it. Fine for a single pharmacy's catalogue.
+    Categories are free text (the schema column is text); typos create separate categories.
+    Deleting a product that later has an uploaded image will need image cleanup (Milestone 8).
+    Next milestone
+    Milestone 7 hosted verification, then Milestone 8 — Image Storage
+    (Hosted verification done: see the next entry.)
+
+    2026-09-30 — Milestone 7 hosted verification & completion
+    Completed
+    Hosted verification (real hosted Supabase project, run manually by the project owner
+    with a real Employee account, signed in through /admin/login with the publishable key
+    and normal session; no secret key involved): various product-management operations
+    were exercised through /admin/products and its create/edit pages and all worked
+    correctly. This confirms product management end to end with a real authenticated
+    Employee against the hosted database, grants and RLS (private.is_staff()).
+    No account details, credentials or test data are recorded in the repository.
+    All Milestone 7 completion criteria and the Definition of Done are met; status set to
+    COMPLETE.
+    Files created
+    None
+    Files modified
+    PROJECT.md, README.md (hosted verification recorded, completion status)
+    Database changes
+    None. No migration, RLS or grant change.
+    Tests performed
+    npm test 99/99; npm run lint, npm run typecheck, npm run build: pass
+    git status/diff reviewed: no secret-bearing or generated files; .env.local ignored
+    Known issues
+    The hosted run was reported as a whole ("various operations"), not step by step
+    against the README checklist; individual steps (duplicate slug, delete, both toggles)
+    are also covered by the unit, database (PGlite) and mock end-to-end runs.
+    Hosted product management was verified as an Employee; the Owner uses the same code
+    path and the same RLS policies (covered locally, and Owner product writes were verified
+    on the hosted database in the Milestone 4 smoke test).
+    Test products created during the hosted run, if any remain, are ordinary catalogue rows
+    and can be deleted from /admin/products.
+    The list is not paginated (PostgREST max-rows, 1000 on hosted projects).
+    Categories are free text; typos create separate categories.
+    Deleting a product that later has an uploaded image will need image cleanup (Milestone 8).
+    Next milestone
+    Milestone 8 — Image Storage
+
 13. AI Development Workflow
     Claude will perform most implementation work.
     Claude should NOT be given unrestricted instructions such as:
@@ -1385,9 +1523,9 @@ The report should be saved/copied into the development workflow so another devel
 
 16. Current State
     Current milestone:
-    Milestone 7 — Admin Product Management (not started)
+    Milestone 8 — Image Storage (not started)
     Project status:
-    Milestones 1–6 complete. Staff sign in at /admin/login. /admin and every child route
+    Milestones 1–7 complete. Staff sign in at /admin/login. /admin and every child route
     require an owner/employee user_roles row, checked in the proxy and by requireStaff().
     Logout is in the admin header. Earlier milestones: Application connects to Supabase (browser/server clients,
     proxy session refresh, env configuration verified). products, events and user_roles
@@ -1401,5 +1539,10 @@ The report should be saved/copied into the development workflow so another devel
     custom SMTP and the repository's invite template; the full Owner invite -> Employee
     accept/password/sign-in -> Owner removal -> access lost lifecycle was verified on the
     hosted project (2026-09-30); the test Employee was removed afterwards.
+    Milestone 7 complete: /admin/products (list, availability/featured toggles, permanent
+    delete), /admin/products/new and /admin/products/[id]/edit for Owner and Employee,
+    using the user-scoped client and the existing products RLS (no migration, no secret
+    key). Unit, database (PGlite) and mock end-to-end checks pass, and product management
+    was verified on the hosted project with a real Employee account (2026-09-30).
     Next action:
-    Milestone 7 — Admin Product Management.
+    Milestone 8 — Image Storage.

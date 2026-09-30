@@ -8,8 +8,9 @@ See [PROJECT.md](PROJECT.md) for the full specification and milestone plan.
 
 ## Current state
 
-Milestones 1–6 (Project Foundation, Supabase Foundation, Database Schema, Database
-Security / RLS, Admin Authentication, Owner Employee Management) are complete. The public site is still a placeholder
+Milestones 1–7 (Project Foundation, Supabase Foundation, Database Schema, Database
+Security / RLS, Admin Authentication, Owner Employee Management, Admin Product Management)
+are complete. The public site is still a placeholder
 page. The `products`, `events` and `user_roles` tables with Row Level Security are applied
 to the hosted Supabase project and verified there (2026-09-28). Staff can sign in at
 `/admin/login` and reach a minimal `/admin` dashboard (see [Admin authentication](#admin-authentication));
@@ -17,8 +18,10 @@ the Owner sign-in flow has been verified against the hosted project (2026-09-28)
 Owner employee management (`/admin/employees`) works on the hosted project, which sends
 invitation emails through custom SMTP. The full invite, accept, sign-in and removal
 lifecycle was verified there on 2026-09-30 (see
-[Employee management](#employee-management-owner-only)). Product/event management and the
-visual design are not implemented yet.
+[Employee management](#employee-management-owner-only)). Product management
+(`/admin/products`, for the Owner and Employees) was verified on the hosted project with a
+real Employee account on 2026-09-30 (see [Product management](#product-management)). Event management, image upload, the public
+catalogue and the visual design are not implemented yet.
 
 ## Access model
 
@@ -404,6 +407,75 @@ admin area.
 Owner protection, partial-failure compensation, the adapter's queries and the
 accept-invite flow. See PROJECT.md (development log) for the mock end-to-end run.
 
+## Product management
+
+The Owner and Employees manage the catalogue at **`/admin/products`**, which is linked from
+the dashboard.
+
+- **List** (`/admin/products`): every product with its slug, category, price,
+  availability and featured status. Each row has **Edit**, **Mark available/unavailable**,
+  **Feature/Unfeature** and **Delete** (the browser asks for confirmation). An empty
+  catalogue and load failures show a message.
+- **Create** (`/admin/products/new`) and **edit** (`/admin/products/<id>/edit`) use the
+  same form: name, slug, category, price, description, available and featured. When a
+  submission fails, the form shows it again with a message on each invalid field. After a
+  successful save the browser returns to the list with "Product created." or
+  "Product saved.".
+- **Delete is permanent.** The schema has no archive state. To take a product off sale
+  but keep it listed, mark it unavailable (unavailable products stay public and will be
+  labelled). Images are not handled yet (Milestone 8).
+
+**Validation (server-side).** Name required (≤120 characters). Slug optional: leave it
+empty to generate it from the name (`Kamilica čaj` → `kamilica-caj`), or type lowercase
+letters, digits and single hyphens (≤100). It must be unique; a clash is reported on the
+slug field, with no automatic suffix. Category (≤60) and description (≤5000) are optional.
+Price is optional: 0 to 99999999.99 with at most 2 decimals, and `6.5` or `6,5` are both
+accepted. Empty optional fields are stored as `NULL`.
+
+**Security.**
+
+| Caller             | Product pages                                   | Product Server Functions |
+| ------------------ | ----------------------------------------------- | ------------------------ |
+| Anonymous          | Redirect to `/admin/login` (proxy)              | Redirect; nothing runs   |
+| Signed in, no role | Signed out, `/admin/login?error=unauthorized`   | Same; nothing runs. RLS would also refuse the write |
+| Employee / Owner   | Allowed                                         | Allowed                  |
+
+- [src/lib/products/management.ts](src/lib/products/management.ts) holds the rules. Each
+  operation first calls `authorizeStaff()` with the caller's verified access
+  (`getAdminAccess()`), then validates its input, and only then queries. Ids must be UUIDs.
+  The status toggles accept only `available`/`featured` with `true`/`false`.
+- Only the fields listed above are read from the form and written
+  ([supabase-store.ts](src/lib/products/supabase-store.ts) names every column). `id`,
+  `image_url` and the timestamps can never be set from the browser. `updated_at` comes
+  from the existing database trigger.
+- Queries use the request's own session and the publishable key
+  ([store.ts](src/lib/products/store.ts)), so the `products` RLS policies check the staff
+  role again in the database. The secret key is **not** used for products.
+- Database errors are reduced to a code and mapped to fixed messages. Raw Supabase or SQL
+  text never reaches the page.
+- No migration and no RLS change were needed.
+
+**Manual hosted check (Owner; creates and deletes one test product).**
+
+1. Sign in as the Owner, open `/admin` → **Product management**.
+2. **Add product**: name `Test Product M7`, leave the slug empty, price `1,5`. Confirm you
+   return to the list with "Product created.", with slug `test-product-m7` and price `1.50`.
+3. Add another product with slug `test-product-m7`. Confirm the slug error appears.
+4. **Edit** the product: change the name, clear the price, save. Confirm "Product saved.".
+5. Use **Mark unavailable** and **Feature**, and confirm both labels change.
+6. **Delete** it, confirm the dialog, and check that it is gone from the list and from
+   Table Editor → `products` in the Supabase Dashboard.
+7. Optional: repeat steps 2 and 6 as an Employee.
+
+Hosted product management was verified on 2026-09-30 with a real Employee account: various
+operations were exercised through the application against the hosted database and RLS,
+and all worked correctly.
+
+**Tests.** `npm test` covers the staff gate for every caller type, validation, slug
+generation and conflicts, invalid and unknown ids, the toggles, deletion, error mapping, and
+the adapter's queries and column whitelist. See PROJECT.md (development log) for the
+database (PGlite) and mock end-to-end runs.
+
 ## Project structure
 
 ```
@@ -419,6 +491,7 @@ src/
       accept-invite/      /admin/accept-invite: invited Employee sets their password (public)
       (dashboard)/        Protected admin routes: layout (requireStaff + header) and /admin page
         employees/        /admin/employees (Owner only): page, client forms, Server Functions
+        products/         /admin/products (+ new/, [id]/edit/): list, shared form, Server Functions
   lib/
     auth/
       roles.ts    Admin authorization rules (role parsing, protected paths, role lookup, messages)
@@ -428,6 +501,10 @@ src/
       management.ts        Owner-only list/invite/remove rules (authorizeOwner first)
       supabase-directory.ts  Privileged Auth Admin API + user_roles operations
       directory.ts         Server-only: opens the directory with the secret-key client
+    products/
+      management.ts        Staff product rules (authorizeStaff first, validation, slugs)
+      supabase-store.ts    products queries with the user's session (RLS applies)
+      store.ts             Server-only: opens the store with the request's client
     supabase/
       env.ts      Reads/validates the public Supabase env vars
       client.ts   Supabase client for Client Components (browser)
@@ -439,6 +516,7 @@ tests/
   auth-roles.test.ts           Unit tests for src/lib/auth/roles.ts (npm test)
   employee-management.test.ts  Owner gate, invite/remove rules, partial failures, adapter
   accept-invite.test.ts        Invitation acceptance rules
+  product-management.test.ts   Staff gate, product validation/slugs, CRUD rules, adapter
 supabase/
   config.toml   Supabase CLI configuration (local stack, seed paths; public sign-up disabled; invite template)
   migrations/   Database schema migrations, applied in filename order

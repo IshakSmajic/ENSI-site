@@ -14,6 +14,7 @@ export const ADMIN_LOGIN_PATH = "/admin/login";
 // Where an invited Employee sets their password (linked from the invitation email).
 export const ADMIN_ACCEPT_INVITE_PATH = "/admin/accept-invite";
 export const ADMIN_EMPLOYEES_PATH = "/admin/employees";
+export const ADMIN_PRODUCTS_PATH = "/admin/products";
 
 export const STAFF_ROLES = ["owner", "employee"] as const;
 export type StaffRole = (typeof STAFF_ROLES)[number];
